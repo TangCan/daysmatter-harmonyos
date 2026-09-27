@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "记得那天"
+    },
+    {
+      "name": "widget_card_name",
+      "value": "倒数日卡片"
+    },
+    {
+      "name": "widget_card_desc",
+      "value": "显示最近的倒数日事件"
+    }
+  ]
+}
