@@ -11,7 +11,7 @@ struct Index {
   @State newName: string = '';
   @State pickedDate: Date = new Date();
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-  private privacyUrl: string = 'https://richardtang.github.io/daysmatter-harmonyos/privacy';
+  private privacyUrl: string = 'https://tangcan.github.io/daysmatter-harmonyos/privacy';
 
   aboutToAppear(): void {
     this.reload();

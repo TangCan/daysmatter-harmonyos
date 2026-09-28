@@ -26,7 +26,7 @@
 ### 运行
 
 ```bash
-git clone https://github.com/<你的用户名>/daysmatter-harmonyos.git
+git clone https://github.com/TangCan/daysmatter-harmonyos.git
 ```
 
 1. 用 DevEco Studio 打开项目根目录
