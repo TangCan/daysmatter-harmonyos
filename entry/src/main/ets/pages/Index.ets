@@ -10,7 +10,8 @@ struct Index {
   @State showAdd: boolean = false;
   @State newName: string = '';
   @State pickedDate: Date = new Date();
-  private context: common.Context = getContext(this);
+  private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+  private privacyUrl: string = 'https://richardtang.github.io/daysmatter-harmonyos/privacy';
 
   aboutToAppear(): void {
     this.reload();
@@ -62,7 +63,7 @@ struct Index {
   build() {
     Stack({ alignContent: Alignment.BottomEnd }) {
       Column() {
-        Text('Days Matter')
+        Text('记得那天')
           .fontSize(28)
           .fontWeight(FontWeight.Bold)
           .fontColor('#222222')
@@ -95,6 +96,22 @@ struct Index {
           .width('100%')
           .padding({ left: 16, right: 16, bottom: 12 })
         }
+
+        Row() {
+          Text('关于与隐私声明')
+            .fontSize(12)
+            .fontColor('#999999')
+            .onClick(() => {
+              try {
+                this.context.openLink(this.privacyUrl);
+              } catch (err) {
+                // Previewer 环境无法跳转，忽略
+              }
+            })
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
+        .padding({ top: 8, bottom: 12 })
       }
       .width('100%')
       .height('100%')
