@@ -12,7 +12,7 @@ struct WidgetCard {
 
   build() {
     Column({ space: 6 }) {
-      Text('Days Matter')
+      Text('记得那天')
         .fontSize(12)
         .fontColor('#888888')
         .maxLines(1)

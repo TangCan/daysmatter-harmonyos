@@ -31,7 +31,7 @@ export class CardSync {
     }
   }
 
-  private static buildPayload(events: CountdownEvent[]): Record<string, string> {
+  public static buildPayload(events: CountdownEvent[]): Record<string, string> {
     const payload: Record<string, string> = {
       'eventName': '暂无事件',
       'daysText': '--'

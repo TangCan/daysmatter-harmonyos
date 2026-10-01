@@ -10,3 +10,8 @@
 /.clang-tidy
 **/.test
 /.appanalyzer
+/keystore
+
+.DS_Store
+releases/
+*.hap

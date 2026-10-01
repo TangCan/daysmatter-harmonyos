@@ -2,6 +2,8 @@ import { Want } from '@kit.AbilityKit';
 import { formBindingData, formProvider, FormExtensionAbility } from '@kit.FormKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { preferences } from '@kit.ArkData';
+import { EventStore } from '../common/EventStore';
+import { CardSync } from '../common/CardSync';
 
 const TAG = 'EntryFormAbility';
 const STORE_NAME = 'daysmatter_store';
@@ -22,7 +24,7 @@ export default class EntryFormAbility extends FormExtensionAbility {
     if (formId && formId.length > 0) {
       this.registerFormId(formId);
     }
-    // 初始数据：主应用添加卡片数据后会推送更新
+    // 先返回占位数据；registerFormId 完成后会立即把当前最新事件推送到这张新卡片
     const binding: Record<string, string> = {
       'eventName': '暂无事件',
       'daysText': '--'
@@ -45,8 +47,16 @@ export default class EntryFormAbility extends FormExtensionAbility {
       const ids: string[] = JSON.parse(raw) as string[];
       if (!ids.includes(formId)) {
         ids.push(formId);
-        pref.put(KEY_FORM_IDS, JSON.stringify(ids));
-        pref.flush();
+        await pref.put(KEY_FORM_IDS, JSON.stringify(ids));
+        await pref.flush();
+      }
+      // 修复：新添加的卡片立即推送当前最新事件，否则"先加事件后加卡片"时卡片永远为空
+      try {
+        const events = await EventStore.load(this.context);
+        const binding = CardSync.buildPayload(events);
+        await formProvider.updateForm(formId, formBindingData.createFormBindingData(binding));
+      } catch (err) {
+        hilog.error(DOMAIN, TAG, 'push initial form data failed: %{public}s', (err as Error).message);
       }
     }).catch((err: Error) => {
       hilog.error(DOMAIN, TAG, 'registerFormId failed: %{public}s', err.message);

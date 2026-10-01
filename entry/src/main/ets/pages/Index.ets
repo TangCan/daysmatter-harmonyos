@@ -21,6 +21,8 @@ struct Index {
     const list = await EventStore.load(this.context);
     list.sort((a: CountdownEvent, b: CountdownEvent) => a.targetDate.localeCompare(b.targetDate));
     this.events = list;
+    // 兜底：应用每次打开时刷新桌面卡片（覆盖卡片先于数据添加等场景）
+    await CardSync.updateAllCards(this.context, list);
   }
 
   async addEvent(): Promise<void> {
