@@ -4,6 +4,7 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { preferences } from '@kit.ArkData';
 import { EventStore } from '../common/EventStore';
 import { CardSync } from '../common/CardSync';
+import { CountdownEvent } from '../model/CountdownEvent';
 
 const TAG = 'EntryFormAbility';
 const STORE_NAME = 'daysmatter_store';
@@ -34,6 +35,13 @@ export default class EntryFormAbility extends FormExtensionAbility {
 
   onUpdateForm(formId: string): void {
     hilog.info(DOMAIN, TAG, 'onUpdateForm, formId=%{public}s', formId);
+    // 自愈：系统触发更新时主动推送最新数据
+    EventStore.load(this.context).then((events: CountdownEvent[]) => {
+      const binding = CardSync.buildPayload(events);
+      return formProvider.updateForm(formId, formBindingData.createFormBindingData(binding));
+    }).catch((err: Error) => {
+      hilog.error(DOMAIN, TAG, 'onUpdateForm push failed: %{public}s', err.message);
+    });
   }
 
   onRemoveForm(formId: string): void {
@@ -42,7 +50,8 @@ export default class EntryFormAbility extends FormExtensionAbility {
   }
 
   private registerFormId(formId: string): void {
-    preferences.getPreferences(this.context, STORE_NAME).then(async (pref) => {
+    // 关键：用 ApplicationContext（应用级目录），与主应用的 EventStore/CardSync 读写同一份文件
+    preferences.getPreferences(this.context.getApplicationContext(), STORE_NAME).then(async (pref) => {
       const raw = await pref.get(KEY_FORM_IDS, '[]') as string;
       const ids: string[] = JSON.parse(raw) as string[];
       if (!ids.includes(formId)) {
@@ -64,7 +73,7 @@ export default class EntryFormAbility extends FormExtensionAbility {
   }
 
   private unregisterFormId(formId: string): void {
-    preferences.getPreferences(this.context, STORE_NAME).then(async (pref) => {
+    preferences.getPreferences(this.context.getApplicationContext(), STORE_NAME).then(async (pref) => {
       const raw = await pref.get(KEY_FORM_IDS, '[]') as string;
       const ids = (JSON.parse(raw) as string[]).filter((id: string) => id !== formId);
       pref.put(KEY_FORM_IDS, JSON.stringify(ids));

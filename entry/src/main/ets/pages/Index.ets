@@ -141,6 +141,12 @@ struct Index {
     Column({ space: 12 }) {
       TextInput({ placeholder: '事件名称，如：妈妈的生日', text: this.newName })
         .height(44)
+        .placeholderColor('#999999')
+        .placeholderFont({ size: 15 })
+        .fontColor('#222222')
+        .backgroundColor('#F1F3F5')
+        .borderRadius(8)
+        .padding({ left: 12, right: 12 })
         .onChange((value: string) => {
           this.newName = value;
         })
