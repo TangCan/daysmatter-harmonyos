@@ -14,7 +14,7 @@ struct WidgetCard {
     Column({ space: 6 }) {
       Text('记得那天')
         .fontSize(12)
-        .fontColor('#888888')
+        .fontColor('#666666')
         .maxLines(1)
 
       Text(this.eventName)
@@ -29,7 +29,7 @@ struct WidgetCard {
       Text(this.daysText)
         .fontSize(26)
         .fontWeight(FontWeight.Bold)
-        .fontColor('#E24B4A')
+        .fontColor('#C0392B')
         .maxLines(1)
     }
     .width('100%')

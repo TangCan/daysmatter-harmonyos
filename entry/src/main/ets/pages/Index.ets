@@ -51,13 +51,13 @@ struct Index {
 
   badgeColor(days: number): string {
     if (days < 0) {
-      return '#999999';
+      return '#666666';
     } else if (days === 0) {
       return '#A32D2D';
     } else if (days <= 7) {
-      return '#E24B4A';
+      return '#C0392B';
     } else if (days <= 30) {
-      return '#BA7517';
+      return '#8F5A00';
     }
     return '#185FA5';
   }
@@ -79,8 +79,8 @@ struct Index {
         if (this.events.length === 0 && !this.showAdd) {
           Column({ space: 12 }) {
             Text('📅').fontSize(56)
-            Text('还没有任何倒数日').fontSize(16).fontColor('#888888')
-            Text('点击右下角 + 添加第一个重要日子').fontSize(13).fontColor('#AAAAAA')
+            Text('还没有任何倒数日').fontSize(16).fontColor('#666666')
+            Text('点击右下角 + 添加第一个重要日子').fontSize(13).fontColor('#6B6B6B')
           }
           .width('100%')
           .layoutWeight(1)
@@ -102,7 +102,7 @@ struct Index {
         Row() {
           Text('关于与隐私声明')
             .fontSize(12)
-            .fontColor('#999999')
+            .fontColor('#666666')
             .onClick(() => {
               try {
                 this.context.openLink(this.privacyUrl);
@@ -124,7 +124,7 @@ struct Index {
         .height(56)
         .fontSize(28)
         .type(ButtonType.Circle)
-        .backgroundColor(this.showAdd ? '#888888' : '#378ADD')
+        .backgroundColor(this.showAdd ? '#666666' : '#378ADD')
         .margin(20)
         .onClick(() => {
           this.showAdd = !this.showAdd;
@@ -141,7 +141,7 @@ struct Index {
     Column({ space: 12 }) {
       TextInput({ placeholder: '事件名称，如：妈妈的生日', text: this.newName })
         .height(44)
-        .placeholderColor('#999999')
+        .placeholderColor('#666666')
         .placeholderFont({ size: 15 })
         .fontColor('#222222')
         .backgroundColor('#F1F3F5')
@@ -183,7 +183,7 @@ struct Index {
           .textOverflow({ overflow: TextOverflow.Ellipsis })
         Text(item.targetDate)
           .fontSize(13)
-          .fontColor('#999999')
+          .fontColor('#666666')
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
@@ -203,10 +203,10 @@ struct Index {
         Text('今天').fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.badgeColor(0))
       } else if (days < 0) {
         Text(`已过 ${-days}`).fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.badgeColor(days))
-        Text('天').fontSize(11).fontColor('#999999')
+        Text('天').fontSize(11).fontColor('#666666')
       } else {
         Text(`${days}`).fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.badgeColor(days))
-        Text('天').fontSize(11).fontColor('#999999')
+        Text('天').fontSize(11).fontColor('#666666')
       }
     }
     .alignItems(HorizontalAlign.End)
@@ -219,7 +219,7 @@ struct Index {
       .height('100%')
       .type(ButtonType.Normal)
       .borderRadius(12)
-      .backgroundColor('#E24B4A')
+      .backgroundColor('#C0392B')
       .fontColor(Color.White)
       .margin({ left: 8 })
       .onClick(() => {
