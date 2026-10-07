@@ -124,7 +124,7 @@ struct Index {
         .height(56)
         .fontSize(28)
         .type(ButtonType.Circle)
-        .backgroundColor(this.showAdd ? '#666666' : '#378ADD')
+        .backgroundColor(this.showAdd ? '#666666' : '#2B6CB0')
         .margin(20)
         .onClick(() => {
           this.showAdd = !this.showAdd;
@@ -159,7 +159,7 @@ struct Index {
 
       Button('保存倒数日')
         .width('100%')
-        .backgroundColor('#378ADD')
+        .backgroundColor('#2B6CB0')
         .onClick(() => {
           this.addEvent();
         })
