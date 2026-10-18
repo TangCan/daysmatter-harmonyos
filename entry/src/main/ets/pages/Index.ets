@@ -153,6 +153,8 @@ struct Index {
 
       DatePicker({ start: new Date(), selected: this.pickedDate })
         .height(120)
+        .disappearTextStyle({ color: '#666666' })
+        .selectedTextStyle({ color: '#C0392B' })
         .onDateChange((value: Date) => {
           this.pickedDate = value;
         })
