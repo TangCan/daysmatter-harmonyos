@@ -10,6 +10,9 @@ struct Index {
   @State showAdd: boolean = false;
   @State newName: string = '';
   @State pickedDate: Date = new Date();
+  @State selYear: number = new Date().getFullYear();
+  @State selMonth: number = new Date().getMonth() + 1;
+  @State selDay: number = new Date().getDate();
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
   private privacyUrl: string = 'https://tangcan.github.io/daysmatter-harmonyos/privacy';
 
@@ -57,9 +60,56 @@ struct Index {
     } else if (days <= 7) {
       return '#C0392B';
     } else if (days <= 30) {
-      return '#8F5A00';
-    }
+      return '#8F5A00';    }
     return '#185FA5';
+  }
+
+  daysInMonth(y: number, m: number): number {
+    return new Date(y, m, 0).getDate();
+  }
+
+  syncStepper(): void {
+    this.selYear = this.pickedDate.getFullYear();
+    this.selMonth = this.pickedDate.getMonth() + 1;
+    this.selDay = this.pickedDate.getDate();
+  }
+
+  stepDate(label: string, delta: number): void {
+    if (label === '年') {
+      this.selYear += delta;
+    } else if (label === '月') {
+      this.selMonth += delta;
+      if (this.selMonth > 12) {
+        this.selMonth = 1;
+        this.selYear += 1;
+      } else if (this.selMonth < 1) {
+        this.selMonth = 12;
+        this.selYear -= 1;
+      }
+    } else {
+      this.selDay += delta;
+      const dim = this.daysInMonth(this.selYear, this.selMonth);
+      if (this.selDay > dim) {
+        this.selDay = 1;
+        this.selMonth += 1;
+        if (this.selMonth > 12) {
+          this.selMonth = 1;
+          this.selYear += 1;
+        }
+      } else if (this.selDay < 1) {
+        this.selMonth -= 1;
+        if (this.selMonth < 1) {
+          this.selMonth = 12;
+          this.selYear -= 1;
+        }
+        this.selDay = this.daysInMonth(this.selYear, this.selMonth);
+      }
+    }
+    const y = Math.min(Math.max(this.selYear, 2020), 2080);
+    if (y !== this.selYear) {
+      this.selYear = y;
+    }
+    this.pickedDate = new Date(this.selYear, this.selMonth - 1, this.selDay);
   }
 
   build() {
@@ -130,10 +180,59 @@ struct Index {
           this.showAdd = !this.showAdd;
           this.newName = '';
           this.pickedDate = new Date();
+          this.syncStepper();
         })
     }
     .width('100%')
     .height('100%')
+  }
+
+  @Builder
+  StepCell(label: string, value: number) {
+    Column({ space: 4 }) {
+      Button('▲')
+        .width(64)
+        .height(30)
+        .fontSize(14)
+        .type(ButtonType.Normal)
+        .borderRadius(8)
+        .backgroundColor('#E8EAED')
+        .fontColor('#222222')
+        .onClick(() => {
+          this.stepDate(label, 1);
+        })
+      Text(`${value} ${label}`)
+        .fontSize(18)
+        .fontWeight(FontWeight.Medium)
+        .fontColor('#222222')
+        .backgroundColor('#F5F6F8')
+        .borderRadius(8)
+        .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+        .minFontSize(14)
+        .maxFontSize(18)
+      Button('▼')
+        .width(64)
+        .height(30)
+        .fontSize(14)
+        .type(ButtonType.Normal)
+        .borderRadius(8)
+        .backgroundColor('#E8EAED')
+        .fontColor('#222222')
+        .onClick(() => {
+          this.stepDate(label, -1);
+        })
+    }
+  }
+
+  @Builder
+  DateStepper() {
+    Row({ space: 10 }) {
+      this.StepCell('年', this.selYear)
+      this.StepCell('月', this.selMonth)
+      this.StepCell('日', this.selDay)
+    }
+    .width('100%')
+    .justifyContent(FlexAlign.Center)
   }
 
   @Builder
@@ -151,13 +250,7 @@ struct Index {
           this.newName = value;
         })
 
-      DatePicker({ start: new Date(), selected: this.pickedDate })
-        .height(120)
-        .disappearTextStyle({ color: '#666666' })
-        .selectedTextStyle({ color: '#C0392B' })
-        .onDateChange((value: Date) => {
-          this.pickedDate = value;
-        })
+      this.DateStepper()
 
       Button('保存倒数日')
         .width('100%')
