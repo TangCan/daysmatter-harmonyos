@@ -80,41 +80,52 @@ struct Index {
   }
 
   stepDate(label: string, delta: number): void {
+    let y = this.selYear;
+    let m = this.selMonth;
+    let d = this.selDay;
     if (label === '年') {
-      this.selYear += delta;
+      y += delta;
     } else if (label === '月') {
-      this.selMonth += delta;
-      if (this.selMonth > 12) {
-        this.selMonth = 1;
-        this.selYear += 1;
-      } else if (this.selMonth < 1) {
-        this.selMonth = 12;
-        this.selYear -= 1;
+      m += delta;
+      if (m > 12) {
+        m = 1;
+        y += 1;
+      } else if (m < 1) {
+        m = 12;
+        y -= 1;
       }
     } else {
-      this.selDay += delta;
-      const dim = this.daysInMonth(this.selYear, this.selMonth);
-      if (this.selDay > dim) {
-        this.selDay = 1;
-        this.selMonth += 1;
-        if (this.selMonth > 12) {
-          this.selMonth = 1;
-          this.selYear += 1;
+      d += delta;
+      if (d > this.daysInMonth(y, m)) {
+        d = 1;
+        m += 1;
+        if (m > 12) {
+          m = 1;
+          y += 1;
         }
-      } else if (this.selDay < 1) {
-        this.selMonth -= 1;
-        if (this.selMonth < 1) {
-          this.selMonth = 12;
-          this.selYear -= 1;
+      } else if (d < 1) {
+        m -= 1;
+        if (m < 1) {
+          m = 12;
+          y -= 1;
         }
-        this.selDay = this.daysInMonth(this.selYear, this.selMonth);
+        d = this.daysInMonth(y, m);
       }
     }
-    const y = Math.min(Math.max(this.selYear, 2020), 2080);
-    if (y !== this.selYear) {
-      this.selYear = y;
+    if (y < 2020 || y > 2080) {
+      return;
     }
-    this.pickedDate = new Date(this.selYear, this.selMonth - 1, this.selDay);
+    d = Math.min(d, this.daysInMonth(y, m));
+    // 本应用只面向未来的提醒：不允许早于今天
+    const today = new Date();
+    const today0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    if (new Date(y, m - 1, d).getTime() < today0.getTime()) {
+      return;
+    }
+    this.selYear = y;
+    this.selMonth = m;
+    this.selDay = d;
+    this.pickedDate = new Date(y, m - 1, d);
   }
 
   build() {
