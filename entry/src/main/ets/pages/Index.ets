@@ -3,6 +3,11 @@ import { EventStore } from '../common/EventStore';
 import { CardSync } from '../common/CardSync';
 import { common } from '@kit.AbilityKit';
 
+interface StepCellParam {
+  label: string;
+  value: number;
+}
+
 @Entry
 @Component
 struct Index {
@@ -188,7 +193,7 @@ struct Index {
   }
 
   @Builder
-  StepCell(label: string, value: number) {
+  StepCell($$: StepCellParam) {
     Column({ space: 4 }) {
       Button('▲')
         .width(64)
@@ -199,9 +204,9 @@ struct Index {
         .backgroundColor('#E8EAED')
         .fontColor('#222222')
         .onClick(() => {
-          this.stepDate(label, 1);
+          this.stepDate($$.label, 1);
         })
-      Text(`${value} ${label}`)
+      Text(`${$$.value} ${$$.label}`)
         .fontSize(18)
         .fontWeight(FontWeight.Medium)
         .fontColor('#222222')
@@ -219,7 +224,7 @@ struct Index {
         .backgroundColor('#E8EAED')
         .fontColor('#222222')
         .onClick(() => {
-          this.stepDate(label, -1);
+          this.stepDate($$.label, -1);
         })
     }
   }
@@ -227,9 +232,9 @@ struct Index {
   @Builder
   DateStepper() {
     Row({ space: 10 }) {
-      this.StepCell('年', this.selYear)
-      this.StepCell('月', this.selMonth)
-      this.StepCell('日', this.selDay)
+      this.StepCell({ label: '年', value: this.selYear })
+      this.StepCell({ label: '月', value: this.selMonth })
+      this.StepCell({ label: '日', value: this.selDay })
     }
     .width('100%')
     .justifyContent(FlexAlign.Center)
