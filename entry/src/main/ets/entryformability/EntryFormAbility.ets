@@ -25,11 +25,10 @@ export default class EntryFormAbility extends FormExtensionAbility {
     if (formId && formId.length > 0) {
       this.registerFormId(formId);
     }
-    // 先返回占位数据；registerFormId 完成后会立即把当前最新事件推送到这张新卡片
-    const binding: Record<string, string> = {
-      'eventName': '暂无事件',
-      'daysText': '--'
-    };
+    // 同步读取当前真实事件作为初始数据：
+    // 卡片选择器/负一屏的预览只渲染 onAddForm 的返回值，异步推送对预览无效
+    const events = EventStore.loadSync(this.context);
+    const binding = CardSync.buildPayload(events);
     return formBindingData.createFormBindingData(binding);
   }
 

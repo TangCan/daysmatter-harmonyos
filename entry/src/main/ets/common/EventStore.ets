@@ -24,6 +24,19 @@ export class EventStore {
     }
   }
 
+  // 同步版本：onAddForm 必须同步返回卡片初始数据（卡片选择器预览只认返回值），
+  // 异步推送只对添加后的实体卡片生效
+  static loadSync(context: common.Context): CountdownEvent[] {
+    try {
+      const pref = preferences.getPreferencesSync(context.getApplicationContext(), { name: STORE_NAME });
+      const raw = pref.getSync(KEY_EVENTS, '[]') as string;
+      const list = JSON.parse(raw) as CountdownEvent[];
+      return list.map((o: CountdownEvent) => CountdownEvent.fromJson(o));
+    } catch (err) {
+      return [];
+    }
+  }
+
   static async save(context: common.Context, events: CountdownEvent[]): Promise<void> {
     try {
       const pref = await preferences.getPreferences(context.getApplicationContext(), STORE_NAME);
