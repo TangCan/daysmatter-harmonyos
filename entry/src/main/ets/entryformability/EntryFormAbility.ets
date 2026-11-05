@@ -9,26 +9,34 @@ import { CountdownEvent } from '../model/CountdownEvent';
 const TAG = 'EntryFormAbility';
 const STORE_NAME = 'daysmatter_store';
 const KEY_FORM_IDS = 'form_ids';
+const KEY_FORM_DIMS = 'form_dims';
 const DOMAIN = 0x0000;
 
 /**
- * 桌面卡片生命周期：添加时登记 formId（供主应用推送数据），销毁时移除
+ * 桌面卡片生命周期：添加时登记 formId 与卡片尺寸（供主应用推送数据），销毁时移除
  */
 export default class EntryFormAbility extends FormExtensionAbility {
   onAddForm(want: Want): formBindingData.FormBindingData {
     hilog.info(DOMAIN, TAG, 'onAddForm');
     const parameters = want.parameters;
     let formId: string = '';
+    let dimension: number = 2;
     if (parameters) {
       formId = parameters['ohos.extra.param.key_form_identity'] as string;
+      const dim = parameters['ohos.extra.param.key.form_dimension'] as number;
+      if (dim !== undefined) {
+        dimension = dim;
+      }
     }
     if (formId && formId.length > 0) {
-      this.registerFormId(formId);
+      this.registerFormId(formId, dimension);
     }
     // 同步读取当前真实事件作为初始数据：
     // 卡片选择器/负一屏的预览只渲染 onAddForm 的返回值，异步推送对预览无效
     const events = EventStore.loadSync(this.context);
     const binding = CardSync.buildPayload(events);
+    // 表单尺寸：2*2=2, 2*4=3, 4*4=4（FormDimension 枚举）
+    binding['wide'] = dimension >= 3 ? '1' : '0';
     return formBindingData.createFormBindingData(binding);
   }
 
@@ -48,7 +56,7 @@ export default class EntryFormAbility extends FormExtensionAbility {
     this.unregisterFormId(formId);
   }
 
-  private registerFormId(formId: string): void {
+  private registerFormId(formId: string, dimension: number): void {
     // 关键：用 ApplicationContext（应用级目录），与主应用的 EventStore/CardSync 读写同一份文件
     preferences.getPreferences(this.context.getApplicationContext(), STORE_NAME).then(async (pref) => {
       const raw = await pref.get(KEY_FORM_IDS, '[]') as string;
@@ -56,12 +64,17 @@ export default class EntryFormAbility extends FormExtensionAbility {
       if (!ids.includes(formId)) {
         ids.push(formId);
         await pref.put(KEY_FORM_IDS, JSON.stringify(ids));
-        await pref.flush();
       }
+      const rawDims = await pref.get(KEY_FORM_DIMS, '{}') as string;
+      const dims = JSON.parse(rawDims) as Record<string, number>;
+      dims[formId] = dimension;
+      await pref.put(KEY_FORM_DIMS, JSON.stringify(dims));
+      await pref.flush();
       // 修复：新添加的卡片立即推送当前最新事件，否则"先加事件后加卡片"时卡片永远为空
       try {
         const events = await EventStore.load(this.context);
         const binding = CardSync.buildPayload(events);
+        binding['wide'] = dimension >= 3 ? '1' : '0';
         await formProvider.updateForm(formId, formBindingData.createFormBindingData(binding));
       } catch (err) {
         hilog.error(DOMAIN, TAG, 'push initial form data failed: %{public}s', (err as Error).message);
@@ -75,8 +88,17 @@ export default class EntryFormAbility extends FormExtensionAbility {
     preferences.getPreferences(this.context.getApplicationContext(), STORE_NAME).then(async (pref) => {
       const raw = await pref.get(KEY_FORM_IDS, '[]') as string;
       const ids = (JSON.parse(raw) as string[]).filter((id: string) => id !== formId);
-      pref.put(KEY_FORM_IDS, JSON.stringify(ids));
-      pref.flush();
+      await pref.put(KEY_FORM_IDS, JSON.stringify(ids));
+      const rawDims = await pref.get(KEY_FORM_DIMS, '{}') as string;
+      const dims = JSON.parse(rawDims) as Record<string, number>;
+      const next: Record<string, number> = {};
+      for (const key of Object.keys(dims)) {
+        if (key !== formId) {
+          next[key] = dims[key];
+        }
+      }
+      await pref.put(KEY_FORM_DIMS, JSON.stringify(next));
+      await pref.flush();
     }).catch((err: Error) => {
       hilog.error(DOMAIN, TAG, 'unregisterFormId failed: %{public}s', err.message);
     });

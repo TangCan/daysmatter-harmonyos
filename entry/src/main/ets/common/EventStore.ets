@@ -4,6 +4,7 @@ import { CountdownEvent } from '../model/CountdownEvent';
 
 const STORE_NAME = 'daysmatter_store';
 const KEY_EVENTS = 'events_json';
+const KEY_PRIVACY = 'privacy_agreed';
 
 /**
  * 事件持久化：使用 Preferences 存 JSON 数组（MVP 够用，后期可升级 relationalStore）
@@ -44,6 +45,31 @@ export class EventStore {
       await pref.flush();
     } catch (err) {
       // 静默失败：Previewer 环境不支持持久化
+    }
+  }
+
+  /**
+   * 是否已同意隐私政策（首次启动必须弹窗确认，合规要求）
+   */
+  static isPrivacyAgreed(context: common.Context): boolean {
+    try {
+      const pref = preferences.getPreferencesSync(context.getApplicationContext(), { name: STORE_NAME });
+      return pref.getSync(KEY_PRIVACY, false) as boolean;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  static setPrivacyAgreed(context: common.Context, agreed: boolean): void {
+    try {
+      preferences.getPreferences(context.getApplicationContext(), STORE_NAME).then(async (pref) => {
+        await pref.put(KEY_PRIVACY, agreed);
+        await pref.flush();
+      }).catch((err: Error) => {
+        // 写入失败不阻断使用，下次启动会再次询问
+      });
+    } catch (err) {
+      // 静默
     }
   }
 }
