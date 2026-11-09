@@ -9,11 +9,14 @@ import {
   nextMilestone,
   lastMilestone,
   milestoneProgress,
+  unitBreakdown,
+  workingDaysBetween,
   categoryOption,
   CategoryOption,
   CATEGORY_OPTIONS
 } from '../model/CountdownEvent';
 import { EventStore } from '../common/EventStore';
+import { DataBackup } from '../common/DataBackup';
 import { CardSync } from '../common/CardSync';
 import { ReminderScheduler } from '../common/ReminderScheduler';
 import { DayTemplate, DAY_TEMPLATES, templateTargetDate } from '../common/FestivalTemplates';
@@ -21,7 +24,7 @@ import { common } from '@kit.AbilityKit';
 import { componentSnapshot } from '@kit.ArkUI';
 import { image } from '@kit.ImageKit';
 import { photoAccessHelper } from '@kit.MediaLibraryKit';
-import { fileIo } from '@kit.CoreFileKit';
+import { fileIo, fileUri } from '@kit.CoreFileKit';
 
 interface StepCellParam {
   label: string;
@@ -37,6 +40,12 @@ interface ChipParam {
 interface RemindOption {
   key: number;
   label: string;
+}
+
+interface CalcParam {
+  dateA: string;
+  dateB: string;
+  days: string;
 }
 
 const REMIND_OPTIONS: RemindOption[] = [
@@ -66,6 +75,17 @@ struct Index {
   @State detailEv: CountdownEvent = new CountdownEvent();
   @State detailItems: ChecklistItem[] = [];
   @State newItemText: string = '';
+  @State showSettings: boolean = false;
+  @State showCalc: boolean = false;
+  @State lockOn: boolean = false;
+  @State pinInput: string = '';
+  @State appLocked: boolean = false;
+  @State unlockInput: string = '';
+  @State calcDateA: string = formatDate(new Date());
+  @State calcDateB: string = formatDate(new Date());
+  @State calcDays: string = '30';
+  @State calcResult: string = '';
+  @State backupMsg: string = '';
   @State pickedDate: Date = new Date();
   @State selYear: number = new Date().getFullYear();
   @State selMonth: number = new Date().getMonth() + 1;
@@ -76,6 +96,9 @@ struct Index {
   aboutToAppear(): void {
     // 合规要求：首次启动必须在用户同意隐私政策后才进入使用
     this.showPrivacy = !EventStore.isPrivacyAgreed(this.context);
+    // 隐私锁：启动即锁定（需输入 PIN 解锁）
+    this.lockOn = EventStore.isLockEnabled(this.context);
+    this.appLocked = this.lockOn;
     this.reload();
   }
 
@@ -398,6 +421,143 @@ struct Index {
     }
   }
 
+  // ---------- 设置：隐私锁 / 数据备份 / 日期计算器 ----------
+  openSettings(): void {
+    this.lockOn = EventStore.isLockEnabled(this.context);
+    this.pinInput = '';
+    this.backupMsg = '';
+    this.showSettings = true;
+  }
+
+  async saveLockSettings(): Promise<void> {
+    const pin = this.pinInput.trim();
+    if (this.lockOn && pin.length !== 4) {
+      this.getUIContext().getPromptAction().showToast({ message: '请先设置 4 位数字 PIN' });
+      return;
+    }
+    await EventStore.saveLock(this.context, this.lockOn, this.lockOn ? pin : '');
+    this.getUIContext().getPromptAction().showToast({ message: this.lockOn ? '隐私锁已开启' : '隐私锁已关闭' });
+    this.showSettings = false;
+  }
+
+  tryUnlock(): void {
+    const pin = EventStore.getLockPin(this.context);
+    if (pin.length > 0 && this.unlockInput.trim() === pin) {
+      this.appLocked = false;
+      this.unlockInput = '';
+    } else {
+      this.getUIContext().getPromptAction().showToast({ message: 'PIN 不正确' });
+    }
+  }
+
+  async exportAll(): Promise<void> {
+    try {
+      this.backupMsg = await DataBackup.exportData(this.context, this.events);
+    } catch (err) {
+      this.backupMsg = '导出失败，请重试';
+    }
+  }
+
+  async importAll(): Promise<void> {
+    try {
+      const msg = await DataBackup.importData(this.context);
+      this.backupMsg = msg;
+      if (msg.startsWith('导入完成')) {
+        await this.reload();
+        // 导入后按新模式重排全部提醒
+        for (const e of this.events) {
+          if (e.remindMode > 0) {
+            const rid = await ReminderScheduler.scheduleFor(this.context, e);
+            e.reminderId = rid;
+          }
+        }
+        await EventStore.save(this.context, this.events);
+      }
+    } catch (err) {
+      this.backupMsg = '导入失败，请重试';
+    }
+  }
+
+  runCalc(): void {
+    const a = new Date(this.calcDateA + 'T00:00:00');
+    const b = new Date(this.calcDateB + 'T00:00:00');
+    if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) {
+      this.calcResult = '请输入有效日期（格式 yyyy-MM-dd）';
+      return;
+    }
+    const diff = Math.round((b.getTime() - a.getTime()) / 86400000);
+    const wd = workingDaysBetween(this.calcDateA, this.calcDateB);
+    let line = diff >= 0 ? `间隔 ${diff} 天，其中 ${wd} 个工作日` : `间隔 ${-diff} 天（结束早于开始），其中 ${wd} 个工作日`;
+    const n = Number(this.calcDays);
+    if (this.calcDays.trim().length > 0 && !Number.isNaN(n)) {
+      const shifted = new Date(a.getTime() + n * 86400000);
+      line += `；${this.calcDateA} ${n >= 0 ? '+' : ''}${n} 天 = ${formatDate(shifted)}`;
+    }
+    this.calcResult = line;
+  }
+
+  // ---------- 事件照片背景（系统照片选择器，无需权限） ----------
+  async pickBackground(): Promise<void> {
+    try {
+      const opt = new photoAccessHelper.PhotoSelectOptions();
+      opt.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE;
+      opt.maxSelectNumber = 1;
+      const pv = new photoAccessHelper.PhotoViewPicker();
+      const result = await pv.select(opt);
+      if (result.photoUris.length === 0) {
+        return;
+      }
+      const destPath = `${this.context.filesDir}/bg_${this.detailId}_${Date.now()}.jpg`;
+      const src = fileIo.openSync(result.photoUris[0], fileIo.OpenMode.READ_ONLY);
+      const dest = fileIo.openSync(destPath, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
+      fileIo.copyFile(src.fd, dest.fd);
+      fileIo.closeSync(src.fd);
+      fileIo.closeSync(dest.fd);
+      await this.saveBackground(destPath);
+      this.getUIContext().getPromptAction().showToast({ message: '背景照片已设置' });
+    } catch (err) {
+      this.getUIContext().getPromptAction().showToast({ message: '设置失败，请重试' });
+    }
+  }
+
+  async removeBackground(): Promise<void> {
+    if (this.detailEv.background.length > 0) {
+      try {
+        fileIo.unlinkSync(this.detailEv.background);
+      } catch (err) {
+        // 文件可能已不存在，忽略
+      }
+    }
+    await this.saveBackground('');
+    this.getUIContext().getPromptAction().showToast({ message: '已移除背景照片' });
+  }
+
+  async saveBackground(path: string): Promise<void> {
+    this.events = this.events.map((e: CountdownEvent) => {
+      if (e.id !== this.detailId) {
+        return e;
+      }
+      const updated = CountdownEvent.fromJson(e);
+      updated.background = path;
+      return updated;
+    });
+    const updatedEv = this.events.find((e: CountdownEvent) => e.id === this.detailId);
+    if (updatedEv !== undefined) {
+      this.detailEv = updatedEv;
+    }
+    await EventStore.save(this.context, this.events);
+    await CardSync.updateAllCards(this.context, this.events);
+  }
+
+  // ---------- 那年今天 ----------
+  todayMemories(): CountdownEvent[] {
+    const now = new Date();
+    const md = `${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+    return this.events.filter((e: CountdownEvent) => {
+      return e.targetDate.length >= 10 && e.targetDate.substring(5) === md && daysBetween(e.targetDate) < 0;
+    });
+  }
+
   /**
    * 应用模板：填充名称/分类/重复开关/日期（场景模板保留用户已选日期）
    */
@@ -512,6 +672,13 @@ struct Index {
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
 
+          Text('设置')
+            .fontSize(13)
+            .fontColor('#2B6CB0')
+            .padding({ left: 8, right: 4, top: 6, bottom: 6 })
+            .onClick(() => {
+              this.openSettings();
+            })
           Text('统计')
             .fontSize(13)
             .fontColor('#2B6CB0')
@@ -644,6 +811,21 @@ struct Index {
       // ---------- 首次启动隐私弹窗 ----------
       if (this.showPrivacy) {
         this.PrivacyDialog()
+      }
+
+      // ---------- 隐私锁（最顶层，锁定时遮挡全部内容） ----------
+      if (this.appLocked) {
+        this.LockDialog()
+      }
+
+      // ---------- 设置 ----------
+      if (this.showSettings) {
+        this.SettingsDialog()
+      }
+
+      // ---------- 日期计算器 ----------
+      if (this.showCalc) {
+        this.CalcDialog()
       }
     }
     .width('100%')
@@ -976,6 +1158,35 @@ struct Index {
           .alignItems(HorizontalAlign.Start)
         }
 
+        // 那年今天：过去的这一天发生过什么
+        if (this.todayMemories().length > 0) {
+          Divider().color('#E8EAED')
+
+          Column({ space: 6 }) {
+            Text('那年今天')
+              .fontSize(14)
+              .fontWeight(FontWeight.Medium)
+              .fontColor('#1F2328')
+            ForEach(this.todayMemories(), (e: CountdownEvent) => {
+              Row({ space: 6 }) {
+                Text(categoryOption(e.category).emoji).fontSize(13)
+                Text(e.name)
+                  .fontSize(13)
+                  .fontColor('#444444')
+                  .layoutWeight(1)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text(`${elapsedDays(e)} 天前`)
+                  .fontSize(12)
+                  .fontColor('#8F5A00')
+              }
+              .width('100%')
+            }, (e: CountdownEvent) => e.id)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+        }
+
         Button('关闭')
           .width('100%')
           .height(40)
@@ -990,6 +1201,249 @@ struct Index {
       .borderRadius(16)
       .backgroundColor(Color.White)
       .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  SettingsDialog() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          this.showSettings = false;
+        })
+
+      Column({ space: 12 }) {
+        Text('设置')
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#1F2328')
+
+        // 隐私锁
+        Row() {
+          Column({ space: 2 }) {
+            Text('隐私锁')
+              .fontSize(14)
+              .fontColor('#1F2328')
+            Text('启动应用需输入 4 位数字 PIN，保护你的日子')
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
+
+          Toggle({ type: ToggleType.Switch, isOn: this.lockOn })
+            .selectedColor('#2B6CB0')
+            .onChange((isOn: boolean) => {
+              this.lockOn = isOn;
+            })
+        }
+        .width('100%')
+
+        if (this.lockOn) {
+          TextInput({ placeholder: '设置 4 位数字 PIN', text: this.pinInput })
+            .type(InputType.Number)
+            .maxLength(4)
+            .height(40)
+            .fontColor('#1F2328')
+            .backgroundColor('#F1F3F5')
+            .borderRadius(10)
+            .padding({ left: 12, right: 12 })
+            .onChange((value: string) => {
+              this.pinInput = value;
+            })
+        }
+
+        Divider().color('#E8EAED')
+
+        // 数据备份
+        Row({ space: 10 }) {
+          Button('导出数据')
+            .layoutWeight(1)
+            .height(40)
+            .backgroundColor('#2B6CB0')
+            .onClick(() => {
+              this.exportAll();
+            })
+          Button('导入数据')
+            .layoutWeight(1)
+            .height(40)
+            .backgroundColor('#E8EAED')
+            .fontColor('#333333')
+            .onClick(() => {
+              this.importAll();
+            })
+        }
+        .width('100%')
+
+        if (this.backupMsg.length > 0) {
+          Text(this.backupMsg)
+            .fontSize(12)
+            .fontColor('#2B6CB0')
+        }
+
+        Text('备份文件保存在你自己选择的位置，全程不上传任何服务器')
+          .fontSize(11)
+          .fontColor('#999999')
+
+        Divider().color('#E8EAED')
+
+        // 日期计算器
+        Button('日期计算器')
+          .width('100%')
+          .height(40)
+          .backgroundColor('#E8EAED')
+          .fontColor('#333333')
+          .onClick(() => {
+            this.showSettings = false;
+            this.calcResult = '';
+            this.showCalc = true;
+          })
+
+        Button('完成')
+          .width('100%')
+          .height(40)
+          .backgroundColor('#E8EAED')
+          .fontColor('#333333')
+          .onClick(() => {
+            this.saveLockSettings();
+          })
+      }
+      .width('88%')
+      .padding(20)
+      .borderRadius(16)
+      .backgroundColor(Color.White)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  CalcDialog() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          this.showCalc = false;
+        })
+
+      Column({ space: 12 }) {
+        Text('日期计算器')
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#1F2328')
+
+        TextInput({ placeholder: '起始日期，如 2026-05-20', text: this.calcDateA })
+          .height(40)
+          .fontColor('#1F2328')
+          .backgroundColor('#F1F3F5')
+          .borderRadius(10)
+          .padding({ left: 12, right: 12 })
+          .onChange((value: string) => {
+            this.calcDateA = value;
+          })
+
+        TextInput({ placeholder: '结束日期，如 2026-10-01', text: this.calcDateB })
+          .height(40)
+          .fontColor('#1F2328')
+          .backgroundColor('#F1F3F5')
+          .borderRadius(10)
+          .padding({ left: 12, right: 12 })
+          .onChange((value: string) => {
+            this.calcDateB = value;
+          })
+
+        TextInput({ placeholder: '推算天数（可选，正=之后，负=之前）', text: this.calcDays })
+          .type(InputType.Number)
+          .height(40)
+          .fontColor('#1F2328')
+          .backgroundColor('#F1F3F5')
+          .borderRadius(10)
+          .padding({ left: 12, right: 12 })
+          .onChange((value: string) => {
+            this.calcDays = value;
+          })
+
+        Button('计算')
+          .width('100%')
+          .height(40)
+          .backgroundColor('#2B6CB0')
+          .onClick(() => {
+            this.runCalc();
+          })
+
+        if (this.calcResult.length > 0) {
+          Text(this.calcResult)
+            .fontSize(13)
+            .fontColor('#444444')
+            .width('100%')
+        }
+
+        Button('关闭')
+          .width('100%')
+          .height(40)
+          .backgroundColor('#E8EAED')
+          .fontColor('#333333')
+          .onClick(() => {
+            this.showCalc = false;
+          })
+      }
+      .width('88%')
+      .padding(20)
+      .borderRadius(16)
+      .backgroundColor(Color.White)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  LockDialog() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#F5F6F8')
+
+      Column({ space: 14 }) {
+        Text('🔒')
+          .fontSize(48)
+        Text('记得那天已锁定')
+          .fontSize(17)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#1F2328')
+
+        TextInput({ placeholder: '输入 4 位数字 PIN', text: this.unlockInput })
+          .type(InputType.Number)
+          .maxLength(4)
+          .width('70%')
+          .height(44)
+          .fontColor('#1F2328')
+          .backgroundColor('#FFFFFF')
+          .borderRadius(10)
+          .padding({ left: 12, right: 12 })
+          .onChange((value: string) => {
+            this.unlockInput = value;
+          })
+
+        Button('解锁')
+          .width('70%')
+          .height(44)
+          .backgroundColor('#2B6CB0')
+          .onClick(() => {
+            this.tryUnlock();
+          })
+      }
+      .width('100%')
+      .alignItems(HorizontalAlign.Center)
     }
     .width('100%')
     .height('100%')
@@ -1164,77 +1618,127 @@ struct Index {
 
   @Builder
   DetailContent() {
-    Column({ space: 10 }) {
-      Row({ space: 8 }) {
-        Text(categoryOption(this.detailEv.category).emoji)
-          .fontSize(22)
-        Text(this.detailEv.name)
-          .fontSize(20)
-          .fontWeight(FontWeight.Bold)
-          .fontColor('#1F2328')
-          .layoutWeight(1)
-          .maxLines(2)
+    Stack() {
+      if (this.detailEv.background.length > 0) {
+        Image(fileUri.getUriFromPath(this.detailEv.background))
+          .width('100%')
+          .height('100%')
+          .objectFit(ImageFit.Cover)
+          .borderRadius(12)
+      }
+      Column({ space: 10 }) {
+        Row({ space: 8 }) {
+          Text(categoryOption(this.detailEv.category).emoji)
+            .fontSize(22)
+          Text(this.detailEv.name)
+            .fontSize(20)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#1F2328')
+            .layoutWeight(1)
+            .maxLines(2)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .width('100%')
+
+        Text(this.dateLine(this.detailEv))
+          .fontSize(12)
+          .fontColor('#666666')
+
+        Row() {
+          this.DaysBadge(daysToEvent(this.detailEv))
+        }
+        .width('100%')
+        .justifyContent(FlexAlign.Center)
+
+        // 多单位换算：周数 / 总小时 / 工作日
+        Text(unitBreakdown(this.detailEv))
+          .fontSize(11)
+          .fontColor('#666666')
+          .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .width('100%')
 
-      Text(this.dateLine(this.detailEv))
-        .fontSize(12)
-        .fontColor('#666666')
+        // 里程碑时间轴（仅对已开始计时的日子显示，如恋爱天数、宝宝成长）
+        if (this.showMilestones()) {
+          Column({ space: 6 }) {
+            Row() {
+              Text('里程碑')
+                .fontSize(13)
+                .fontWeight(FontWeight.Medium)
+                .fontColor('#1F2328')
+              Blank()
+              if (this.lastMilestoneText().length > 0) {
+                Text(this.lastMilestoneText())
+                  .fontSize(11)
+                  .fontColor('#8F5A00')
+              }
+            }
+            .width('100%')
 
-      Row() {
-        this.DaysBadge(daysToEvent(this.detailEv))
-      }
-      .width('100%')
-      .justifyContent(FlexAlign.Center)
+            Progress({ value: milestoneProgress(this.detailEv), total: 100, style: ProgressStyle.Linear })
+              .color('#D4A017')
+              .backgroundColor('#F1E7CF')
+              .borderRadius(4)
 
-      // 里程碑时间轴（仅对已开始计时的日子显示，如恋爱天数、宝宝成长）
-      if (this.showMilestones()) {
-        Column({ space: 6 }) {
-          Row() {
-            Text('里程碑')
-              .fontSize(13)
-              .fontWeight(FontWeight.Medium)
-              .fontColor('#1F2328')
-            Blank()
-            if (this.lastMilestoneText().length > 0) {
-              Text(this.lastMilestoneText())
+            if (this.nextMilestoneText().length > 0) {
+              Text(this.nextMilestoneText())
                 .fontSize(11)
-                .fontColor('#8F5A00')
+                .fontColor('#666666')
             }
           }
           .width('100%')
-
-          Progress({ value: milestoneProgress(this.detailEv), total: 100, style: ProgressStyle.Linear })
-            .color('#D4A017')
-            .backgroundColor('#F1E7CF')
-            .borderRadius(4)
-
-          if (this.nextMilestoneText().length > 0) {
-            Text(this.nextMilestoneText())
-              .fontSize(11)
-              .fontColor('#666666')
-          }
+          .padding(10)
+          .backgroundColor('#FFF9EE')
+          .borderRadius(10)
         }
-        .width('100%')
-        .padding(10)
-        .backgroundColor('#FFF9EE')
-        .borderRadius(10)
-      }
 
-      if (this.detailEv.note.length > 0) {
-        Text(this.detailEv.note)
-          .fontSize(13)
-          .fontColor('#444444')
-          .width('100%')
+        if (this.detailEv.note.length > 0) {
+          Text(this.detailEv.note)
+            .fontSize(13)
+            .fontColor('#444444')
+            .width('100%')
+        }
       }
+      .width('100%')
+      .padding(14)
+      .backgroundColor(this.detailEv.background.length > 0 ? '#E8FFFFFF' : Color.Transparent)
+      .borderRadius(12)
     }
     .id('shareCard')
     .width('100%')
-    .padding(14)
     .borderRadius(12)
     .backgroundColor(Color.White)
     .border({ width: 1, color: '#E8EAED' })
+  }
+
+  @Builder
+  DetailPhotoRow() {
+    Row({ space: 10 }) {
+      Button(this.detailEv.background.length > 0 ? '更换照片' : '设置照片背景')
+        .fontSize(13)
+        .height(34)
+        .backgroundColor('#E8EAED')
+        .fontColor('#333333')
+        .onClick(() => {
+          this.pickBackground();
+        })
+      if (this.detailEv.background.length > 0) {
+        Button('移除照片')
+          .fontSize(13)
+          .height(34)
+          .backgroundColor('#E8EAED')
+          .fontColor('#C0392B')
+          .onClick(() => {
+            this.removeBackground();
+          })
+      }
+      Text('仅保存在本机')
+        .fontSize(11)
+        .fontColor('#999999')
+    }
+    .width('100%')
+    .padding({ left: 14, right: 14, top: 4, bottom: 4 })
+    .borderRadius(12)
+    .backgroundColor(Color.White)
   }
 
   @Builder
@@ -1333,6 +1837,7 @@ struct Index {
       Scroll() {
         Column({ space: 12 }) {
           this.DetailContent()
+          this.DetailPhotoRow()
           this.DetailChecklist()
 
           Row({ space: 10 }) {

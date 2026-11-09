@@ -5,6 +5,8 @@ import { CountdownEvent } from '../model/CountdownEvent';
 const STORE_NAME = 'daysmatter_store';
 const KEY_EVENTS = 'events_json';
 const KEY_PRIVACY = 'privacy_agreed';
+const KEY_LOCK_ENABLED = 'lock_enabled';
+const KEY_LOCK_PIN = 'lock_pin';
 
 /**
  * 事件持久化：使用 Preferences 存 JSON 数组（MVP 够用，后期可升级 relationalStore）
@@ -68,6 +70,36 @@ export class EventStore {
       }).catch((err: Error) => {
         // 写入失败不阻断使用，下次启动会再次询问
       });
+    } catch (err) {
+      // 静默
+    }
+  }
+
+  // ---------- 隐私锁（4 位数字 PIN，纯本地） ----------
+  static isLockEnabled(context: common.Context): boolean {
+    try {
+      const pref = preferences.getPreferencesSync(context.getApplicationContext(), { name: STORE_NAME });
+      return pref.getSync(KEY_LOCK_ENABLED, false) as boolean;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  static getLockPin(context: common.Context): string {
+    try {
+      const pref = preferences.getPreferencesSync(context.getApplicationContext(), { name: STORE_NAME });
+      return pref.getSync(KEY_LOCK_PIN, '') as string;
+    } catch (err) {
+      return '';
+    }
+  }
+
+  static async saveLock(context: common.Context, enabled: boolean, pin: string): Promise<void> {
+    try {
+      const pref = await preferences.getPreferences(context.getApplicationContext(), STORE_NAME);
+      await pref.put(KEY_LOCK_ENABLED, enabled);
+      await pref.put(KEY_LOCK_PIN, pin);
+      await pref.flush();
     } catch (err) {
       // 静默
     }

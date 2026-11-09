@@ -40,6 +40,7 @@ export class CountdownEvent {
   remindMode: number = 0;  // 0=不提醒 1=当天提醒 2=提前1天提醒
   reminderId: number = 0;  // 系统提醒代理分配的 id，0=未安排
   items: ChecklistItem[] = [];  // 事件准备清单（待办事项）
+  background: string = '';      // 事件照片背景（应用沙箱内的绝对路径，空=无）
 
   static fromJson(obj: CountdownEvent): CountdownEvent {
     const e = new CountdownEvent();
@@ -59,6 +60,7 @@ export class CountdownEvent {
         return c;
       });
     }
+    e.background = obj.background !== undefined ? obj.background : '';
     return e;
   }
 }
@@ -217,4 +219,62 @@ export function milestoneProgress(item: CountdownEvent): number {
   }
   const elapsed = elapsedDays(item);
   return Math.min(100, Math.max(0, Math.round(((elapsed - lastBase) / span) * 100)));
+}
+
+// ==================== 多单位换算与日期计算器 ====================
+
+/**
+ * 两日期之间的工作日数量（周一~周五，不含起始日、含结束日；方向自动适应正负）
+ */
+export function workingDaysBetween(fromDate: string, toDate: string): number {
+  const a = new Date(fromDate + 'T00:00:00');
+  const b = new Date(toDate + 'T00:00:00');
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) {
+    return 0;
+  }
+  const forward = b.getTime() >= a.getTime();
+  const step = forward ? 86400000 : -86400000;
+  let cursor = a.getTime() + step;
+  const end = b.getTime();
+  let count = 0;
+  let guard = 0;
+  while ((forward ? cursor <= end : cursor >= end) && guard < 50000) {
+    const dow = new Date(cursor).getDay();
+    if (dow !== 0 && dow !== 6) {
+      count++;
+    }
+    cursor += step;
+    guard++;
+  }
+  return count;
+}
+
+/**
+ * 详情页多单位描述：周数、总小时数、工作日
+ */
+export function unitBreakdown(item: CountdownEvent): string {
+  const d = daysToEvent(item);
+  if (d === 0) {
+    return '就是今天';
+  }
+  const abs = Math.abs(d);
+  const weeks = Math.floor(abs / 7);
+  const hours = abs * 24;
+  const ref = d > 0 ? formatDate(new Date()) : item.targetDate;
+  const target = d > 0 ? effectiveDate(item) : formatDate(new Date());
+  const wd = workingDaysBetween(ref, target);
+  let line = '';
+  if (d > 0) {
+    line = `还有 ${abs} 天`;
+  } else {
+    line = `已过 ${abs} 天`;
+  }
+  if (weeks >= 1) {
+    line += ` · 约 ${weeks} 周`;
+  }
+  line += ` · 约 ${hours} 小时`;
+  if (wd > 0) {
+    line += ` · ${wd} 个工作日`;
+  }
+  return line;
 }
