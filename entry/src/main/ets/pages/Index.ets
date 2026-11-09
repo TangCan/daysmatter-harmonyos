@@ -10,6 +10,8 @@ import {
 } from '../model/CountdownEvent';
 import { EventStore } from '../common/EventStore';
 import { CardSync } from '../common/CardSync';
+import { ReminderScheduler } from '../common/ReminderScheduler';
+import { DayTemplate, DAY_TEMPLATES, templateTargetDate } from '../common/FestivalTemplates';
 import { common } from '@kit.AbilityKit';
 
 interface StepCellParam {
@@ -22,6 +24,17 @@ interface ChipParam {
   label: string;
   emoji: string;
 }
+
+interface RemindOption {
+  key: number;
+  label: string;
+}
+
+const REMIND_OPTIONS: RemindOption[] = [
+  { key: 0, label: '不提醒' },
+  { key: 1, label: '当天提醒' },
+  { key: 2, label: '提前1天' }
+];
 
 @Entry
 @Component
@@ -37,6 +50,8 @@ struct Index {
   @State formNote: string = '';
   @State formCategory: string = 'birthday';
   @State formRepeat: boolean = false;
+  @State formRemind: number = 0;
+  @State showStats: boolean = false;
   @State showPrivacy: boolean = false;
   @State pickedDate: Date = new Date();
   @State selYear: number = new Date().getFullYear();
@@ -132,10 +147,34 @@ struct Index {
 
   dateLine(item: CountdownEvent): string {
     const cat = categoryOption(item.category).label;
+    let line = `${item.targetDate} · ${cat}`;
     if (item.repeatYearly) {
-      return `${item.targetDate} · ${cat} · 每年`;
+      line += ' · 每年';
     }
-    return `${item.targetDate} · ${cat}`;
+    if (item.remindMode > 0) {
+      line += ' · 🔔';
+    }
+    return line;
+  }
+
+  // ---------- 数据概览统计 ----------
+  statsOngoing(): number {
+    return this.events.filter((e: CountdownEvent) => daysToEvent(e) >= 0).length;
+  }
+
+  statsOverdue(): number {
+    return this.events.filter((e: CountdownEvent) => daysToEvent(e) < 0).length;
+  }
+
+  statsWithin30(): number {
+    return this.events.filter((e: CountdownEvent) => {
+      const d = daysToEvent(e);
+      return d >= 0 && d <= 30;
+    }).length;
+  }
+
+  statsWithReminder(): number {
+    return this.events.filter((e: CountdownEvent) => e.remindMode > 0).length;
   }
 
   async saveEvent(): Promise<void> {
@@ -144,7 +183,17 @@ struct Index {
       return;
     }
     const dateStr = formatDate(this.pickedDate);
-    if (this.editingId.length > 0) {
+    const editing = this.editingId.length > 0;
+    let savedId = '';
+    // 记下旧提醒 id：编辑时需要先取消旧提醒再重新安排
+    let oldReminderId = 0;
+    if (editing) {
+      savedId = this.editingId;
+      const prev = this.events.find((e: CountdownEvent) => e.id === this.editingId);
+      oldReminderId = prev !== undefined ? prev.reminderId : 0;
+    }
+
+    if (editing) {
       this.events = this.events.map((e: CountdownEvent) => {
         if (e.id !== this.editingId) {
           return e;
@@ -155,6 +204,8 @@ struct Index {
         updated.category = this.formCategory;
         updated.note = this.formNote.trim();
         updated.repeatYearly = this.formRepeat;
+        updated.remindMode = this.formRemind;
+        updated.reminderId = 0;
         return updated;
       });
     } else {
@@ -165,17 +216,28 @@ struct Index {
       e.category = this.formCategory;
       e.note = this.formNote.trim();
       e.repeatYearly = this.formRepeat;
+      e.remindMode = this.formRemind;
       e.pinned = false;
       e.createdAt = Date.now();
+      savedId = e.id;
       this.events = this.events.concat(e);
     }
     this.closePanel();
+
+    // 同步系统提醒：取消旧提醒 → 按新模式重新安排
+    await ReminderScheduler.cancel(oldReminderId);
+    const saved = this.events.find((e: CountdownEvent) => e.id === savedId);
+    if (saved !== undefined && saved.remindMode > 0) {
+      const rid = await ReminderScheduler.scheduleFor(this.context, saved);
+      saved.reminderId = rid;
+    }
     await EventStore.save(this.context, this.events);
     await CardSync.updateAllCards(this.context, this.events);
   }
 
   async deleteEvent(item: CountdownEvent): Promise<void> {
     this.events = this.events.filter((e: CountdownEvent) => e.id !== item.id);
+    await ReminderScheduler.cancel(item.reminderId);
     await EventStore.save(this.context, this.events);
     await CardSync.updateAllCards(this.context, this.events);
   }
@@ -199,6 +261,7 @@ struct Index {
     this.formNote = '';
     this.formCategory = 'birthday';
     this.formRepeat = false;
+    this.formRemind = 0;
     this.pickedDate = new Date();
     this.syncStepper();
     this.showPanel = true;
@@ -210,9 +273,24 @@ struct Index {
     this.formNote = item.note;
     this.formCategory = item.category;
     this.formRepeat = item.repeatYearly;
+    this.formRemind = item.remindMode;
     this.pickedDate = new Date(item.targetDate + 'T00:00:00');
     this.syncStepper();
     this.showPanel = true;
+  }
+
+  /**
+   * 应用模板：填充名称/分类/重复开关/日期（场景模板保留用户已选日期）
+   */
+  applyTemplate(t: DayTemplate): void {
+    this.formName = t.name;
+    this.formCategory = t.category;
+    this.formRepeat = t.repeatYearly;
+    const ds = templateTargetDate(t);
+    if (ds.length > 0) {
+      this.pickedDate = new Date(ds + 'T00:00:00');
+      this.syncStepper();
+    }
   }
 
   closePanel(): void {
@@ -315,6 +393,13 @@ struct Index {
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
 
+          Text('统计')
+            .fontSize(13)
+            .fontColor('#2B6CB0')
+            .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+            .onClick(() => {
+              this.showStats = true;
+            })
           Text(this.showSearch ? '取消' : '搜索')
             .fontSize(13)
             .fontColor('#2B6CB0')
@@ -427,6 +512,11 @@ struct Index {
         this.EditPanel()
       }
 
+      // ---------- 数据概览 ----------
+      if (this.showStats) {
+        this.StatsDialog()
+      }
+
       // ---------- 首次启动隐私弹窗 ----------
       if (this.showPrivacy) {
         this.PrivacyDialog()
@@ -527,6 +617,32 @@ struct Index {
         }
         .width('100%')
 
+        // ---------- 模板快加 ----------
+        Scroll() {
+          Row({ space: 8 }) {
+            ForEach(DAY_TEMPLATES, (t: DayTemplate) => {
+              Row({ space: 4 }) {
+                Text(t.emoji).fontSize(13)
+                Text(t.name)
+                  .fontSize(13)
+                  .fontColor('#333333')
+              }
+              .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+              .borderRadius(14)
+              .backgroundColor('#F1F3F5')
+              .onClick(() => {
+                this.applyTemplate(t);
+              })
+            }, (t: DayTemplate) => t.key)
+          }
+          .padding({ left: 2, right: 2 })
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .width('100%')
+        .height(36)
+        .align(Alignment.Start)
+
         Scroll() {
           Column({ space: 12 }) {
             TextInput({ placeholder: '事件名称，如：妈妈的生日', text: this.formName })
@@ -587,6 +703,34 @@ struct Index {
             }
             .width('100%')
 
+            Row() {
+              Column({ space: 2 }) {
+                Text('提醒')
+                  .fontSize(14)
+                  .fontColor('#1F2328')
+                Text('系统本地通知，当天上午 9 点送达')
+                  .fontSize(11)
+                  .fontColor('#666666')
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+
+              Row({ space: 6 }) {
+                ForEach(REMIND_OPTIONS, (o: RemindOption) => {
+                  Text(o.label)
+                    .fontSize(12)
+                    .fontColor(this.formRemind === o.key ? '#FFFFFF' : '#333333')
+                    .backgroundColor(this.formRemind === o.key ? '#2B6CB0' : '#F1F3F5')
+                    .padding({ left: 8, right: 8, top: 5, bottom: 5 })
+                    .borderRadius(12)
+                    .onClick(() => {
+                      this.formRemind = o.key;
+                    })
+                }, (o: RemindOption) => o.key.toString())
+              }
+            }
+            .width('100%')
+
             TextInput({ placeholder: '备注（可选），如：记得买蛋糕', text: this.formNote })
               .height(44)
               .placeholderColor('#666666')
@@ -637,6 +781,94 @@ struct Index {
     }
     .width('100%')
     .alignItems(VerticalAlign.Top)
+  }
+
+  @Builder
+  StatsRow(label: string, value: number, accent: string) {
+    Row() {
+      Text(label)
+        .fontSize(13)
+        .fontColor('#444444')
+      Blank()
+      Text(`${value}`)
+        .fontSize(20)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(accent)
+    }
+    .width('100%')
+  }
+
+  @Builder
+  StatsDialog() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          this.showStats = false;
+        })
+
+      Column({ space: 12 }) {
+        Text('数据概览')
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#1F2328')
+
+        if (this.events.length === 0) {
+          Text('还没有记录，先添加一个重要日子吧')
+            .fontSize(13)
+            .fontColor('#666666')
+        } else {
+          Column({ space: 10 }) {
+            this.StatsRow('进行中（含今天）', this.statsOngoing(), '#185FA5')
+            this.StatsRow('30 天内到来', this.statsWithin30(), '#8F5A00')
+            this.StatsRow('已过期', this.statsOverdue(), '#666666')
+            this.StatsRow('已开启提醒', this.statsWithReminder(), '#2B6CB0')
+          }
+          .width('100%')
+          .padding(12)
+          .backgroundColor('#F5F6F8')
+          .borderRadius(10)
+
+          Divider().color('#E8EAED')
+
+          Column({ space: 8 }) {
+            ForEach(CATEGORY_OPTIONS, (c: CategoryOption) => {
+              Row({ space: 6 }) {
+                Text(c.emoji).fontSize(13)
+                Text(c.label)
+                  .fontSize(13)
+                  .fontColor('#444444')
+                Blank()
+                Text(`${this.events.filter((e: CountdownEvent) => e.category === c.key).length} 个`)
+                  .fontSize(13)
+                  .fontColor('#666666')
+              }
+              .width('100%')
+            }, (c: CategoryOption) => c.key)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+        }
+
+        Button('关闭')
+          .width('100%')
+          .height(40)
+          .backgroundColor('#E8EAED')
+          .fontColor('#333333')
+          .onClick(() => {
+            this.showStats = false;
+          })
+      }
+      .width('88%')
+      .padding(20)
+      .borderRadius(16)
+      .backgroundColor(Color.White)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height('100%')
   }
 
   @Builder

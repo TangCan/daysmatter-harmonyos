@@ -29,6 +29,8 @@ export class CountdownEvent {
   repeatYearly: boolean = false;
   pinned: boolean = false;
   createdAt: number = 0;
+  remindMode: number = 0;  // 0=不提醒 1=当天提醒 2=提前1天提醒
+  reminderId: number = 0;  // 系统提醒代理分配的 id，0=未安排
 
   static fromJson(obj: CountdownEvent): CountdownEvent {
     const e = new CountdownEvent();
@@ -40,6 +42,8 @@ export class CountdownEvent {
     e.repeatYearly = obj.repeatYearly === true;
     e.pinned = obj.pinned === true;
     e.createdAt = obj.createdAt !== undefined ? obj.createdAt : 0;
+    e.remindMode = obj.remindMode !== undefined ? obj.remindMode : 0;
+    e.reminderId = obj.reminderId !== undefined ? obj.reminderId : 0;
     return e;
   }
 }

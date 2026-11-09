@@ -12,6 +12,12 @@
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
+    "requestPermissions": [
+      {
+        // 本地提醒通知（系统级日历提醒，普通权限，不涉及个人信息）
+        "name": "ohos.permission.PUBLISH_AGENT_REMINDER"
+      }
+    ],
     "abilities": [
       {
         "name": "EntryAbility",
