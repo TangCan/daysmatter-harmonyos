@@ -1,9 +1,14 @@
 import {
   CountdownEvent,
+  ChecklistItem,
   daysBetween,
   formatDate,
   effectiveDate,
   daysToEvent,
+  elapsedDays,
+  nextMilestone,
+  lastMilestone,
+  milestoneProgress,
   categoryOption,
   CategoryOption,
   CATEGORY_OPTIONS
@@ -13,6 +18,10 @@ import { CardSync } from '../common/CardSync';
 import { ReminderScheduler } from '../common/ReminderScheduler';
 import { DayTemplate, DAY_TEMPLATES, templateTargetDate } from '../common/FestivalTemplates';
 import { common } from '@kit.AbilityKit';
+import { componentSnapshot } from '@kit.ArkUI';
+import { image } from '@kit.ImageKit';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
+import { fileIo } from '@kit.CoreFileKit';
 
 interface StepCellParam {
   label: string;
@@ -53,6 +62,10 @@ struct Index {
   @State formRemind: number = 0;
   @State showStats: boolean = false;
   @State showPrivacy: boolean = false;
+  @State detailId: string = '';
+  @State detailEv: CountdownEvent = new CountdownEvent();
+  @State detailItems: ChecklistItem[] = [];
+  @State newItemText: string = '';
   @State pickedDate: Date = new Date();
   @State selYear: number = new Date().getFullYear();
   @State selMonth: number = new Date().getMonth() + 1;
@@ -279,6 +292,112 @@ struct Index {
     this.showPanel = true;
   }
 
+  // ---------- 日子详情：清单 + 里程碑 + 分享图 ----------
+  openDetail(item: CountdownEvent): void {
+    this.detailId = item.id;
+    this.detailEv = item;
+    this.detailItems = item.items.map((it: ChecklistItem): ChecklistItem => {
+      const c: ChecklistItem = { text: it.text, done: it.done };
+      return c;
+    });
+    this.newItemText = '';
+  }
+
+  closeDetail(): void {
+    this.detailId = '';
+    this.detailItems = [];
+    this.newItemText = '';
+  }
+
+  editFromDetail(): void {
+    const ev = this.detailEv;
+    if (ev.id.length > 0) {
+      this.closeDetail();
+      this.openEdit(ev);
+    }
+  }
+
+  async persistDetailItems(): Promise<void> {
+    const items: ChecklistItem[] = this.detailItems.map((it: ChecklistItem): ChecklistItem => {
+      const c: ChecklistItem = { text: it.text, done: it.done };
+      return c;
+    });
+    this.events = this.events.map((e: CountdownEvent) => {
+      if (e.id !== this.detailId) {
+        return e;
+      }
+      const updated = CountdownEvent.fromJson(e);
+      updated.items = items;
+      return updated;
+    });
+    await EventStore.save(this.context, this.events);
+    await CardSync.updateAllCards(this.context, this.events);
+  }
+
+  toggleItem(index: number): void {
+    this.detailItems = this.detailItems.map((it: ChecklistItem, i: number): ChecklistItem => {
+      const c: ChecklistItem = { text: it.text, done: i === index ? !it.done : it.done };
+      return c;
+    });
+    this.persistDetailItems();
+  }
+
+  removeItem(index: number): void {
+    this.detailItems = this.detailItems.filter((_it: ChecklistItem, i: number) => i !== index);
+    this.persistDetailItems();
+  }
+
+  addItem(): void {
+    const text = this.newItemText.trim();
+    if (text.length === 0) {
+      return;
+    }
+    const c: ChecklistItem = { text: text, done: false };
+    this.detailItems = this.detailItems.concat(c);
+    this.newItemText = '';
+    this.persistDetailItems();
+  }
+
+  itemsDone(): number {
+    return this.detailItems.filter((it: ChecklistItem) => it.done).length;
+  }
+
+  lastMilestoneText(): string {
+    const ms = lastMilestone(this.detailEv);
+    return ms !== undefined ? `已达成「${ms.label}」` : '';
+  }
+
+  nextMilestoneText(): string {
+    const ms = nextMilestone(this.detailEv);
+    if (ms === undefined) {
+      return '';
+    }
+    const when = ms.daysFromToday === 0 ? '就是今天' : `${ms.daysFromToday} 天后`;
+    return `下一个：${ms.label} · ${ms.dateStr}（${when}）`;
+  }
+
+  showMilestones(): boolean {
+    return elapsedDays(this.detailEv) > 0;
+  }
+
+  // ---------- 分享卡片保存（SaveButton 安全控件内调用，免权限弹窗） ----------
+  async saveShareImage(): Promise<void> {
+    try {
+      const pm: image.PixelMap = await componentSnapshot.get('shareCard');
+      const helper: photoAccessHelper.PhotoAccessHelper = photoAccessHelper.getPhotoAccessHelper(this.context);
+      const uri: string = await helper.createAsset(photoAccessHelper.PhotoType.IMAGE, 'png');
+      const packer: image.ImagePacker = image.createImagePacker();
+      const buf: ArrayBuffer = await packer.packToData(pm, { format: 'image/png', quality: 100 });
+      const file = fileIo.openSync(uri, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.TRUNC);
+      fileIo.writeSync(file.fd, buf);
+      fileIo.closeSync(file.fd);
+      packer.release();
+      this.getUIContext().getPromptAction().showToast({ message: '分享图已保存到相册' });
+    } catch (err) {
+      this.getUIContext().getPromptAction().showToast({ message: '保存失败，请重试' });
+    }
+  }
+
   /**
    * 应用模板：填充名称/分类/重复开关/日期（场景模板保留用户已选日期）
    */
@@ -473,7 +592,7 @@ struct Index {
                 this.EventCard(item)
               }
               .swipeAction({ start: this.PinButton(item), end: this.DeleteButton(item) })
-            }, (item: CountdownEvent) => `${item.id}-${item.pinned}-${item.targetDate}-${item.name}-${item.category}`)
+            }, (item: CountdownEvent) => `${item.id}-${item.pinned}-${item.targetDate}-${item.name}-${item.category}-${item.items.length}`)
           }
           .layoutWeight(1)
           .width('100%')
@@ -515,6 +634,11 @@ struct Index {
       // ---------- 数据概览 ----------
       if (this.showStats) {
         this.StatsDialog()
+      }
+
+      // ---------- 日子详情（清单 / 里程碑 / 分享图） ----------
+      if (this.detailId.length > 0) {
+        this.DetailDialog()
       }
 
       // ---------- 首次启动隐私弹窗 ----------
@@ -976,6 +1100,24 @@ struct Index {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
+
+        if (item.items.length > 0) {
+          Row({ space: 8 }) {
+            Progress({
+              value: item.items.filter((it: ChecklistItem) => it.done).length,
+              total: item.items.length,
+              style: ProgressStyle.Linear
+            })
+              .color('#2B6CB0')
+              .backgroundColor('#E8EAED')
+              .borderRadius(4)
+              .layoutWeight(1)
+            Text(`准备 ${item.items.filter((it: ChecklistItem) => it.done).length}/${item.items.length}`)
+              .fontSize(11)
+              .fontColor('#2B6CB0')
+          }
+          .width('100%')
+        }
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
@@ -987,7 +1129,7 @@ struct Index {
     .borderRadius(12)
     .backgroundColor(Color.White)
     .onClick(() => {
-      this.openEdit(item);
+      this.openDetail(item);
     })
   }
 
@@ -1018,6 +1160,216 @@ struct Index {
       }
     }
     .alignItems(HorizontalAlign.End)
+  }
+
+  @Builder
+  DetailContent() {
+    Column({ space: 10 }) {
+      Row({ space: 8 }) {
+        Text(categoryOption(this.detailEv.category).emoji)
+          .fontSize(22)
+        Text(this.detailEv.name)
+          .fontSize(20)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#1F2328')
+          .layoutWeight(1)
+          .maxLines(2)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .width('100%')
+
+      Text(this.dateLine(this.detailEv))
+        .fontSize(12)
+        .fontColor('#666666')
+
+      Row() {
+        this.DaysBadge(daysToEvent(this.detailEv))
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Center)
+
+      // 里程碑时间轴（仅对已开始计时的日子显示，如恋爱天数、宝宝成长）
+      if (this.showMilestones()) {
+        Column({ space: 6 }) {
+          Row() {
+            Text('里程碑')
+              .fontSize(13)
+              .fontWeight(FontWeight.Medium)
+              .fontColor('#1F2328')
+            Blank()
+            if (this.lastMilestoneText().length > 0) {
+              Text(this.lastMilestoneText())
+                .fontSize(11)
+                .fontColor('#8F5A00')
+            }
+          }
+          .width('100%')
+
+          Progress({ value: milestoneProgress(this.detailEv), total: 100, style: ProgressStyle.Linear })
+            .color('#D4A017')
+            .backgroundColor('#F1E7CF')
+            .borderRadius(4)
+
+          if (this.nextMilestoneText().length > 0) {
+            Text(this.nextMilestoneText())
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+        }
+        .width('100%')
+        .padding(10)
+        .backgroundColor('#FFF9EE')
+        .borderRadius(10)
+      }
+
+      if (this.detailEv.note.length > 0) {
+        Text(this.detailEv.note)
+          .fontSize(13)
+          .fontColor('#444444')
+          .width('100%')
+      }
+    }
+    .id('shareCard')
+    .width('100%')
+    .padding(14)
+    .borderRadius(12)
+    .backgroundColor(Color.White)
+    .border({ width: 1, color: '#E8EAED' })
+  }
+
+  @Builder
+  DetailChecklist() {
+    Column({ space: 8 }) {
+      Row() {
+        Text('准备清单')
+          .fontSize(15)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#1F2328')
+        Blank()
+        if (this.detailItems.length > 0) {
+          Text(`${this.itemsDone()}/${this.detailItems.length} 已完成`)
+            .fontSize(12)
+            .fontColor('#2B6CB0')
+        }
+      }
+      .width('100%')
+
+      if (this.detailItems.length > 0) {
+        Progress({ value: this.itemsDone(), total: this.detailItems.length, style: ProgressStyle.Linear })
+          .color('#2B6CB0')
+          .backgroundColor('#E8EAED')
+          .borderRadius(4)
+
+        ForEach(this.detailItems, (it: ChecklistItem, index: number) => {
+          Row({ space: 8 }) {
+            Text(it.done ? '☑' : '☐')
+              .fontSize(18)
+              .fontColor(it.done ? '#2B6CB0' : '#999999')
+              .onClick(() => {
+                this.toggleItem(index);
+              })
+            Text(it.text)
+              .fontSize(14)
+              .fontColor(it.done ? '#999999' : '#1F2328')
+              .decoration({ type: it.done ? TextDecorationType.LineThrough : TextDecorationType.None })
+              .layoutWeight(1)
+              .maxLines(2)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .onClick(() => {
+                this.toggleItem(index);
+              })
+            Text('✕')
+              .fontSize(13)
+              .fontColor('#999999')
+              .padding(4)
+              .onClick(() => {
+                this.removeItem(index);
+              })
+          }
+          .width('100%')
+        }, (it: ChecklistItem, index: number) => `${index}-${it.text}-${it.done}`)
+      }
+
+      Row({ space: 8 }) {
+        TextInput({ placeholder: '添加准备事项，如：订蛋糕、买礼物', text: this.newItemText })
+          .height(38)
+          .layoutWeight(1)
+          .placeholderColor('#999999')
+          .placeholderFont({ size: 13 })
+          .fontColor('#1F2328')
+          .backgroundColor('#F1F3F5')
+          .borderRadius(8)
+          .padding({ left: 10, right: 10 })
+          .onChange((value: string) => {
+            this.newItemText = value;
+          })
+        Button('添加')
+          .height(38)
+          .fontSize(14)
+          .backgroundColor('#2B6CB0')
+          .onClick(() => {
+            this.addItem();
+          })
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .padding(14)
+    .borderRadius(12)
+    .backgroundColor(Color.White)
+  }
+
+  @Builder
+  DetailDialog() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          this.closeDetail();
+        })
+
+      Scroll() {
+        Column({ space: 12 }) {
+          this.DetailContent()
+          this.DetailChecklist()
+
+          Row({ space: 10 }) {
+            Button('编辑')
+              .layoutWeight(1)
+              .height(42)
+              .backgroundColor('#E8EAED')
+              .fontColor('#333333')
+              .onClick(() => {
+                this.editFromDetail();
+              })
+            Row() {
+              SaveButton({ icon: SaveIconStyle.FULL_FILLED, text: SaveDescription.SAVE_IMAGE, buttonType: ButtonType.Capsule })
+                .height(42)
+                .onClick((event: ClickEvent, result: SaveButtonOnClickResult) => {
+                  if (result === SaveButtonOnClickResult.SUCCESS) {
+                    this.saveShareImage();
+                  } else {
+                    this.getUIContext().getPromptAction().showToast({ message: '请允许保存后再试' });
+                  }
+                })
+            }
+            .layoutWeight(1)
+            .justifyContent(FlexAlign.Center)
+          }
+          .width('100%')
+        }
+        .width('92%')
+        .padding(16)
+        .backgroundColor('#F5F6F8')
+        .borderRadius(16)
+      }
+      .constraintSize({ maxHeight: 600 })
+      .scrollBar(BarState.Off)
+    }
+    .width('100%')
+    .height('100%')
   }
 
   @Builder

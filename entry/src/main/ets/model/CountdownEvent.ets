@@ -20,6 +20,14 @@ export function categoryOption(key: string): CategoryOption {
   return found !== undefined ? found : CATEGORY_OPTIONS[4];
 }
 
+/**
+ * 事件准备清单条目
+ */
+export interface ChecklistItem {
+  text: string;
+  done: boolean;
+}
+
 export class CountdownEvent {
   id: string = '';
   name: string = '';
@@ -31,6 +39,7 @@ export class CountdownEvent {
   createdAt: number = 0;
   remindMode: number = 0;  // 0=不提醒 1=当天提醒 2=提前1天提醒
   reminderId: number = 0;  // 系统提醒代理分配的 id，0=未安排
+  items: ChecklistItem[] = [];  // 事件准备清单（待办事项）
 
   static fromJson(obj: CountdownEvent): CountdownEvent {
     const e = new CountdownEvent();
@@ -44,6 +53,12 @@ export class CountdownEvent {
     e.createdAt = obj.createdAt !== undefined ? obj.createdAt : 0;
     e.remindMode = obj.remindMode !== undefined ? obj.remindMode : 0;
     e.reminderId = obj.reminderId !== undefined ? obj.reminderId : 0;
+    if (obj.items !== undefined && Array.isArray(obj.items)) {
+      e.items = obj.items.map((it: ChecklistItem): ChecklistItem => {
+        const c: ChecklistItem = { text: it.text, done: it.done === true };
+        return c;
+      });
+    }
     return e;
   }
 }
@@ -100,4 +115,106 @@ export function effectiveDate(item: CountdownEvent): string {
  */
 export function daysToEvent(item: CountdownEvent): number {
   return daysBetween(effectiveDate(item));
+}
+
+// ==================== 里程碑时间轴 ====================
+
+export interface Milestone {
+  label: string;        // 如 '100 天' / '1 周年' / '满 30 岁'
+  dateStr: string;      // 到达日 yyyy-MM-dd
+  daysFromToday: number; // 距今天数，负数=已达成
+  daysFromBase: number;  // 距事件原始日期的天数
+}
+
+// 固定的天数里程碑节点
+const MILESTONE_DAYS: number[] = [30, 100, 200, 365, 500, 1000, 1500, 2000, 3000, 5000, 10000];
+
+/**
+ * 距原始日期已过的天数（正数=已过 X 天）
+ */
+export function elapsedDays(item: CountdownEvent): number {
+  return -daysBetween(item.targetDate);
+}
+
+/**
+ * 生成事件的里程碑列表（按到达日期升序，去重）
+ * 生日分类显示"满 N 岁"，其余显示"N 周年"
+ */
+export function milestoneList(item: CountdownEvent): Milestone[] {
+  const parts = item.targetDate.split('-');
+  if (parts.length !== 3) {
+    return [];
+  }
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  if (Number.isNaN(y) || Number.isNaN(m) || Number.isNaN(d)) {
+    return [];
+  }
+  const base = new Date(y, m - 1, d);
+  const isBirthday = item.category === 'birthday';
+  const list: Milestone[] = [];
+  const seen = new Set<string>();
+
+  const push = (label: string, date: Date): void => {
+    const ds = formatDate(date);
+    if (seen.has(ds)) {
+      return;
+    }
+    seen.add(ds);
+    const fromToday = daysBetween(ds);
+    const fromBase = Math.round((date.getTime() - base.getTime()) / 86400000);
+    const ms: Milestone = { label: label, dateStr: ds, daysFromToday: fromToday, daysFromBase: fromBase };
+    list.push(ms);
+  };
+
+  for (const days of MILESTONE_DAYS) {
+    const date = new Date(base.getTime() + days * 86400000);
+    let label = `${days} 天`;
+    if (days === 365) {
+      label = isBirthday ? '满 1 岁' : '1 周年';
+    }
+    push(label, date);
+  }
+  for (let k = 1; k <= 40; k++) {
+    const date = new Date(y + k, m - 1, d);
+    const label = isBirthday ? `满 ${k} 岁` : `${k} 周年`;
+    push(label, date);
+  }
+
+  list.sort((a: Milestone, b: Milestone) => a.dateStr.localeCompare(b.dateStr));
+  return list;
+}
+
+/**
+ * 下一个（未达成的）里程碑；全部达成时返回 undefined
+ */
+export function nextMilestone(item: CountdownEvent): Milestone | undefined {
+  return milestoneList(item).find((ms: Milestone) => ms.daysFromToday >= 0);
+}
+
+/**
+ * 最近一个已达成的里程碑；无则返回 undefined
+ */
+export function lastMilestone(item: CountdownEvent): Milestone | undefined {
+  const passed = milestoneList(item).filter((ms: Milestone) => ms.daysFromToday < 0);
+  return passed.length > 0 ? passed[passed.length - 1] : undefined;
+}
+
+/**
+ * 从上一个里程碑到下一个里程碑的进度（0~100）
+ */
+export function milestoneProgress(item: CountdownEvent): number {
+  const next = nextMilestone(item);
+  const last = lastMilestone(item);
+  if (next === undefined) {
+    return 100;
+  }
+  const lastBase = last !== undefined ? last.daysFromBase : 0;
+  const span = next.daysFromBase - lastBase;
+  if (span <= 0) {
+    return 100;
+  }
+  const elapsed = elapsedDays(item);
+  return Math.min(100, Math.max(0, Math.round(((elapsed - lastBase) / span) * 100)));
 }
