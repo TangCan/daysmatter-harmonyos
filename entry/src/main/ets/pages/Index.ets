@@ -26,6 +26,16 @@ import {
 } from '../model/EventQuery';
 import { DateSelection, stepSelection, calcDateRange } from '../model/DateStepper';
 import { EventStore } from '../common/EventStore';
+import {
+  PIN_LENGTH,
+  PIN_LOCK_SECONDS,
+  MAX_PIN_ATTEMPTS,
+  isValidPin,
+  normalizePin,
+  remainingAttempts,
+  lockoutUntil,
+  lockSecondsLeft
+} from '../common/PinLock';
 import { DataBackup } from '../common/DataBackup';
 import { CardSync } from '../common/CardSync';
 import { ReminderScheduler } from '../common/ReminderScheduler';
@@ -88,9 +98,22 @@ struct Index {
   @State showSettings: boolean = false;
   @State showCalc: boolean = false;
   @State lockOn: boolean = false;
-  @State pinInput: string = '';
+  // 开关的显示值：与真实存储状态分开，取消设置流程时能可靠回位
+  @State lockSwitch: boolean = false;
   @State appLocked: boolean = false;
   @State unlockInput: string = '';
+  @State unlockTip: string = '';
+  // 隐私锁设置面板：pinMode = enable / change / disable
+  // pinStage = 1 验证当前 PIN｜2 设置新 PIN｜3 再次输入确认
+  @State showPinSheet: boolean = false;
+  @State pinMode: string = 'enable';
+  @State pinStage: number = 2;
+  @State pinDraft: string = '';
+  @State pinField: string = '';
+  @State pinTip: string = '';
+  @State pinFails: number = 0;
+  @State pinLockUntil: number = 0;
+  @State pinCountdown: number = 0;
   @State calcDateA: string = formatDate(new Date());
   @State calcDateB: string = formatDate(new Date());
   @State calcDays: string = '30';
@@ -102,14 +125,27 @@ struct Index {
   @State selDay: number = new Date().getDate();
   private context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
   private privacyUrl: string = 'https://tangcan.github.io/daysmatter-harmonyos/privacy';
+  private pinTimer: number = -1;
 
   aboutToAppear(): void {
     // 合规要求：首次启动必须在用户同意隐私政策后才进入使用
     this.showPrivacy = !EventStore.isPrivacyAgreed(this.context);
     // 隐私锁：启动即锁定（需输入 PIN 解锁）
     this.lockOn = EventStore.isLockEnabled(this.context);
+    // 兜底：开启状态却没有任何凭证（缓存被清理等）时不能把用户锁在门外
+    const hasCredential = EventStore.getLockHash(this.context).length > 0
+      || EventStore.getLegacyPin(this.context).length > 0;
+    if (this.lockOn && !hasCredential) {
+      EventStore.disableLock(this.context);
+      this.lockOn = false;
+    }
+    this.lockSwitch = this.lockOn;
     this.appLocked = this.lockOn;
     this.reload();
+  }
+
+  aboutToDisappear(): void {
+    this.stopPinCountdown();
   }
 
   async reload(): Promise<void> {
@@ -365,30 +401,191 @@ struct Index {
   // ---------- 设置：隐私锁 / 数据备份 / 日期计算器 ----------
   openSettings(): void {
     this.lockOn = EventStore.isLockEnabled(this.context);
-    this.pinInput = '';
+    this.lockSwitch = this.lockOn;
     this.backupMsg = '';
     this.showSettings = true;
   }
 
-  async saveLockSettings(): Promise<void> {
-    const pin = this.pinInput.trim();
-    if (this.lockOn && pin.length !== 4) {
-      this.getUIContext().getPromptAction().showToast({ message: '请先设置 4 位数字 PIN' });
+  // ---------- 隐私锁 ----------
+  /**
+   * 打开 PIN 面板
+   * @param mode enable=首次开启｜change=修改 PIN（需先验证原 PIN）｜disable=关闭（需先验证原 PIN）
+   */
+  openPinSheet(mode: string): void {
+    this.pinMode = mode;
+    // 开启流程没有旧 PIN，直接进入"设置新 PIN"；修改/关闭必须先验证身份
+    this.pinStage = mode === 'enable' ? 2 : 1;
+    this.pinDraft = '';
+    this.pinField = '';
+    this.pinFails = 0;
+    this.pinLockUntil = 0;
+    this.pinCountdown = 0;
+    this.stopPinCountdown();
+    this.pinTip = this.pinStage === 1 ? '请输入当前 PIN 以验证身份' : `设置一个 ${PIN_LENGTH} 位数字 PIN`;
+    this.showPinSheet = true;
+  }
+
+  closePinSheet(): void {
+    this.stopPinCountdown();
+    this.showPinSheet = false;
+    this.pinField = '';
+    this.pinDraft = '';
+    this.pinTip = '';
+    // 开关显示以真实存储状态为准：中途取消时自动回位
+    this.lockOn = EventStore.isLockEnabled(this.context);
+    this.lockSwitch = this.lockOn;
+  }
+
+  startPinCountdown(): void {
+    this.stopPinCountdown();
+    this.pinCountdown = lockSecondsLeft(Date.now(), this.pinLockUntil);
+    this.pinTimer = setInterval(() => {
+      const left = lockSecondsLeft(Date.now(), this.pinLockUntil);
+      this.pinCountdown = left;
+      if (left <= 0) {
+        this.stopPinCountdown();
+        this.pinTip = '可以重新输入 PIN 了';
+        this.unlockTip = '';
+        return;
+      }
+      const tip = `错误次数过多，请 ${left} 秒后再试`;
+      this.pinTip = tip;
+      if (this.appLocked) {
+        this.unlockTip = tip;
+      }
+    }, 1000);
+  }
+
+  stopPinCountdown(): void {
+    if (this.pinTimer !== -1) {
+      clearInterval(this.pinTimer);
+      this.pinTimer = -1;
+    }
+  }
+
+  /**
+   * 提交 PIN：根据当前步骤执行"验证原 PIN / 记录新 PIN / 确认新 PIN"
+   */
+  submitPin(): void {
+    const wait = lockSecondsLeft(Date.now(), this.pinLockUntil);
+    if (wait > 0) {
+      this.pinTip = `错误次数过多，请 ${wait} 秒后再试`;
       return;
     }
-    await EventStore.saveLock(this.context, this.lockOn, this.lockOn ? pin : '');
-    this.getUIContext().getPromptAction().showToast({ message: this.lockOn ? '隐私锁已开启' : '隐私锁已关闭' });
-    this.showSettings = false;
+    const pin = this.pinField;
+    if (!isValidPin(pin)) {
+      this.pinTip = `请输入 ${PIN_LENGTH} 位数字`;
+      return;
+    }
+
+    if (this.pinStage === 1) {
+      const result = EventStore.verifyLockPin(this.context, pin);
+      if (!result.ok) {
+        this.registerPinFailure('PIN 不正确');
+        return;
+      }
+      this.pinFails = 0;
+      if (this.pinMode === 'disable') {
+        this.applyDisableLock();
+        return;
+      }
+      this.pinStage = 2;
+      this.pinField = '';
+      this.pinTip = `设置一个新的 ${PIN_LENGTH} 位数字 PIN`;
+      return;
+    }
+
+    if (this.pinStage === 2) {
+      this.pinDraft = pin;
+      this.pinStage = 3;
+      this.pinField = '';
+      this.pinTip = '再次输入以确认';
+      return;
+    }
+
+    if (pin !== this.pinDraft) {
+      this.pinStage = 2;
+      this.pinDraft = '';
+      this.pinField = '';
+      this.pinTip = '两次输入不一致，请重新设置';
+      return;
+    }
+    this.applySetPin(pin);
+  }
+
+  registerPinFailure(prefix: string): void {
+    this.pinFails++;
+    const left = remainingAttempts(this.pinFails);
+    this.pinField = '';
+    if (left === 0) {
+      // 达到上限：锁定 30 秒，防止被逐个数字穷举
+      this.pinFails = 0;
+      this.pinLockUntil = lockoutUntil(Date.now());
+      this.pinTip = `错误次数过多，请 ${PIN_LOCK_SECONDS} 秒后再试`;
+      this.startPinCountdown();
+      return;
+    }
+    this.pinTip = `${prefix}，还可尝试 ${left} 次`;
+  }
+
+  async applySetPin(pin: string): Promise<void> {
+    await EventStore.saveLockPin(this.context, pin);
+    this.stopPinCountdown();
+    this.lockOn = EventStore.isLockEnabled(this.context);
+    this.lockSwitch = this.lockOn;
+    this.showPinSheet = false;
+    this.pinField = '';
+    this.pinDraft = '';
+    this.pinTip = '';
+    this.getUIContext().getPromptAction().showToast({
+      message: this.pinMode === 'change' ? 'PIN 已更新' : '隐私锁已开启'
+    });
+  }
+
+  async applyDisableLock(): Promise<void> {
+    await EventStore.disableLock(this.context);
+    this.stopPinCountdown();
+    this.lockOn = false;
+    this.lockSwitch = false;
+    this.showPinSheet = false;
+    this.pinField = '';
+    this.pinDraft = '';
+    this.pinTip = '';
+    this.getUIContext().getPromptAction().showToast({ message: '隐私锁已关闭' });
   }
 
   tryUnlock(): void {
-    const pin = EventStore.getLockPin(this.context);
-    if (pin.length > 0 && this.unlockInput.trim() === pin) {
+    const wait = lockSecondsLeft(Date.now(), this.pinLockUntil);
+    if (wait > 0) {
+      this.unlockTip = `错误次数过多，请 ${wait} 秒后再试`;
+      return;
+    }
+    const pin = normalizePin(this.unlockInput);
+    if (!isValidPin(pin)) {
+      this.unlockTip = `请输入 ${PIN_LENGTH} 位数字 PIN`;
+      return;
+    }
+    const result = EventStore.verifyLockPin(this.context, pin);
+    if (result.ok) {
+      this.stopPinCountdown();
       this.appLocked = false;
       this.unlockInput = '';
-    } else {
-      this.getUIContext().getPromptAction().showToast({ message: 'PIN 不正确' });
+      this.unlockTip = '';
+      this.pinFails = 0;
+      this.pinLockUntil = 0;
+      return;
     }
+    this.unlockInput = '';
+    this.pinFails++;
+    const left = remainingAttempts(this.pinFails);
+    if (left === 0) {
+      this.pinFails = 0;
+      this.pinLockUntil = lockoutUntil(Date.now());
+      this.unlockTip = `错误次数过多，请 ${PIN_LOCK_SECONDS} 秒后再试`;
+      this.startPinCountdown();
+      return;
+    }
+    this.unlockTip = `PIN 不正确，还可尝试 ${left} 次`;
   }
 
   async exportAll(): Promise<void> {
@@ -692,6 +889,11 @@ struct Index {
       // ---------- 设置 ----------
       if (this.showSettings) {
         this.SettingsDialog()
+      }
+
+      // ---------- 隐私锁设置（PIN 设置/修改/关闭） ----------
+      if (this.showPinSheet) {
+        this.PinSheet()
       }
 
       // ---------- 日期计算器 ----------
@@ -1077,6 +1279,105 @@ struct Index {
     .height('100%')
   }
 
+  pinTitle(): string {
+    if (this.pinMode === 'disable') {
+      return '关闭隐私锁';
+    }
+    if (this.pinMode === 'change') {
+      return this.pinStage === 1 ? '验证当前 PIN' : '修改 PIN';
+    }
+    return this.pinStage === 3 ? '确认 PIN' : '开启隐私锁';
+  }
+
+  pinSubtitle(): string {
+    if (this.pinMode === 'disable') {
+      return '关闭后启动应用不再要求输入 PIN，已设置的 PIN 将被清除';
+    }
+    if (this.pinMode === 'change' && this.pinStage === 1) {
+      return '修改前需验证当前 PIN，避免被他人直接改掉';
+    }
+    return `设置 ${PIN_LENGTH} 位数字，仅在本机以加盐摘要保存，遗忘后无法找回`;
+  }
+
+  @Builder
+  PinSheet() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          this.closePinSheet();
+        })
+
+      Column({ space: 12 }) {
+        Text(this.pinTitle())
+          .fontSize(17)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#1F2328')
+          .width('100%')
+
+        Text(this.pinSubtitle())
+          .fontSize(12)
+          .fontColor('#666666')
+          .width('100%')
+
+        TextInput({ placeholder: '输入 4 位数字', text: this.pinField })
+          .type(InputType.Password)
+          .showPasswordIcon(false)
+          .maxLength(PIN_LENGTH)
+          .inputFilter('[0-9]')
+          .textAlign(TextAlign.Center)
+          .letterSpacing(10)
+          .height(46)
+          .width('100%')
+          .fontColor('#1F2328')
+          .backgroundColor('#F1F3F5')
+          .borderRadius(10)
+          .padding({ left: 12, right: 12 })
+          .onChange((value: string) => {
+            this.pinField = normalizePin(value);
+          })
+          .onSubmit(() => {
+            this.submitPin();
+          })
+
+        if (this.pinTip.length > 0) {
+          Text(this.pinTip)
+            .fontSize(12)
+            .fontColor(this.pinCountdown > 0 ? '#A32D2D' : '#8F5A00')
+            .width('100%')
+        }
+
+        Button(this.pinCountdown > 0 ? `${this.pinCountdown} 秒后可重试`
+          : (this.pinStage === 3 ? '确认' : '下一步'))
+          .width('100%')
+          .height(44)
+          .backgroundColor(this.pinCountdown > 0 ? '#B8C2CC' : '#2B6CB0')
+          .enabled(this.pinCountdown === 0)
+          .onClick(() => {
+            this.submitPin();
+          })
+
+        Button('取消')
+          .width('100%')
+          .height(38)
+          .backgroundColor('#E8EAED')
+          .fontColor('#333333')
+          .onClick(() => {
+            this.closePinSheet();
+          })
+      }
+      .width('84%')
+      .padding(20)
+      .borderRadius(16)
+      .backgroundColor(Color.White)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
   @Builder
   SettingsDialog() {
     Stack({ alignContent: Alignment.Center }) {
@@ -1100,33 +1401,43 @@ struct Index {
             Text('隐私锁')
               .fontSize(14)
               .fontColor('#1F2328')
-            Text('启动应用需输入 4 位数字 PIN，保护你的日子')
+            Text(`启动需输入 ${PIN_LENGTH} 位数字 PIN，仅在本机以加盐摘要保存`)
               .fontSize(11)
               .fontColor('#666666')
           }
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
 
-          Toggle({ type: ToggleType.Switch, isOn: this.lockOn })
+          Toggle({ type: ToggleType.Switch, isOn: this.lockSwitch })
             .selectedColor('#2B6CB0')
             .onChange((isOn: boolean) => {
-              this.lockOn = isOn;
+              this.lockSwitch = isOn;
+              if (isOn === this.lockOn) {
+                return;
+              }
+              // 开启需先设置 PIN、关闭需先验证原 PIN，成功后才真正写入状态
+              this.openPinSheet(isOn ? 'enable' : 'disable');
             })
         }
         .width('100%')
 
         if (this.lockOn) {
-          TextInput({ placeholder: '设置 4 位数字 PIN', text: this.pinInput })
-            .type(InputType.Number)
-            .maxLength(4)
-            .height(40)
-            .fontColor('#1F2328')
-            .backgroundColor('#F1F3F5')
-            .borderRadius(10)
-            .padding({ left: 12, right: 12 })
-            .onChange((value: string) => {
-              this.pinInput = value;
-            })
+          Row({ space: 8 }) {
+            Text(`连续输错 ${MAX_PIN_ATTEMPTS} 次将锁定 ${PIN_LOCK_SECONDS} 秒；设置中修改 PIN 需先验证原 PIN`)
+              .fontSize(11)
+              .fontColor('#666666')
+              .layoutWeight(1)
+            Button('修改 PIN')
+              .height(30)
+              .padding({ left: 12, right: 12 })
+              .fontSize(12)
+              .backgroundColor('#E8EAED')
+              .fontColor('#2B6CB0')
+              .onClick(() => {
+                this.openPinSheet('change');
+              })
+          }
+          .width('100%')
         }
 
         Divider().color('#E8EAED')
@@ -1181,7 +1492,7 @@ struct Index {
           .backgroundColor('#E8EAED')
           .fontColor('#333333')
           .onClick(() => {
-            this.saveLockSettings();
+            this.showSettings = false;
           })
       }
       .width('88%')
@@ -1292,9 +1603,17 @@ struct Index {
           .fontWeight(FontWeight.Bold)
           .fontColor('#1F2328')
 
-        TextInput({ placeholder: '输入 4 位数字 PIN', text: this.unlockInput })
-          .type(InputType.Number)
-          .maxLength(4)
+        Text(`输入 ${PIN_LENGTH} 位数字 PIN 继续`)
+          .fontSize(12)
+          .fontColor('#666666')
+
+        TextInput({ placeholder: '输入 4 位数字', text: this.unlockInput })
+          .type(InputType.Password)
+          .showPasswordIcon(false)
+          .maxLength(PIN_LENGTH)
+          .inputFilter('[0-9]')
+          .textAlign(TextAlign.Center)
+          .letterSpacing(10)
           .width('70%')
           .height(44)
           .fontColor('#1F2328')
@@ -1302,16 +1621,32 @@ struct Index {
           .borderRadius(10)
           .padding({ left: 12, right: 12 })
           .onChange((value: string) => {
-            this.unlockInput = value;
+            this.unlockInput = normalizePin(value);
+          })
+          .onSubmit(() => {
+            this.tryUnlock();
           })
 
-        Button('解锁')
+        if (this.unlockTip.length > 0) {
+          Text(this.unlockTip)
+            .fontSize(12)
+            .fontColor('#A32D2D')
+        }
+
+        Button(this.pinCountdown > 0 ? `${this.pinCountdown} 秒后可重试` : '解锁')
           .width('70%')
           .height(44)
-          .backgroundColor('#2B6CB0')
+          .backgroundColor(this.pinCountdown > 0 ? '#B8C2CC' : '#2B6CB0')
+          .enabled(this.pinCountdown === 0)
           .onClick(() => {
             this.tryUnlock();
           })
+
+        Text('PIN 仅保存在本机，忘记后无法找回；卸载重装可重置，但会清空全部数据')
+          .fontSize(11)
+          .fontColor('#999999')
+          .width('80%')
+          .textAlign(TextAlign.Center)
       }
       .width('100%')
       .alignItems(HorizontalAlign.Center)
