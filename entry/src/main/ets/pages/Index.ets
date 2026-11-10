@@ -1,20 +1,30 @@
 import {
   CountdownEvent,
   ChecklistItem,
-  daysBetween,
   formatDate,
-  effectiveDate,
   daysToEvent,
   elapsedDays,
-  nextMilestone,
-  lastMilestone,
   milestoneProgress,
   unitBreakdown,
-  workingDaysBetween,
   categoryOption,
   CategoryOption,
   CATEGORY_OPTIONS
 } from '../model/CountdownEvent';
+import {
+  filterAndSort,
+  summaryText as buildSummaryText,
+  dateLine as buildDateLine,
+  computeStats,
+  EventStats,
+  doneCount,
+  checklistLabel,
+  lastMilestoneText as buildLastMilestoneText,
+  nextMilestoneText as buildNextMilestoneText,
+  showMilestones as hasMilestones,
+  badgeColor as pickBadgeColor,
+  todayMemories as pickTodayMemories
+} from '../model/EventQuery';
+import { DateSelection, stepSelection, calcDateRange } from '../model/DateStepper';
 import { EventStore } from '../common/EventStore';
 import { DataBackup } from '../common/DataBackup';
 import { CardSync } from '../common/CardSync';
@@ -132,85 +142,22 @@ struct Index {
   }
 
   /**
-   * 过滤 + 排序后的展示列表：置顶优先，其次按日期或添加时间
+   * 过滤 + 排序后的展示列表（逻辑见 model/EventQuery）
    */
   visibleEvents(): CountdownEvent[] {
-    let list = this.events;
-    if (this.filter !== 'all') {
-      list = list.filter((e: CountdownEvent) => e.category === this.filter);
-    }
-    const kw = this.keyword.trim().toLowerCase();
-    if (kw.length > 0) {
-      list = list.filter((e: CountdownEvent) =>
-        e.name.toLowerCase().includes(kw) || e.note.toLowerCase().includes(kw));
-    }
-    const result = list.slice();
-    result.sort((a: CountdownEvent, b: CountdownEvent) => {
-      if (a.pinned !== b.pinned) {
-        return a.pinned ? -1 : 1;
-      }
-      if (this.sortBy === 'created') {
-        return b.createdAt - a.createdAt;
-      }
-      return daysToEvent(a) - daysToEvent(b);
-    });
-    return result;
+    return filterAndSort(this.events, this.filter, this.keyword, this.sortBy);
   }
 
   summaryText(): string {
-    if (this.events.length === 0) {
-      return '开始记录第一个重要日子';
-    }
-    let bestName = this.events[0].name;
-    let bestDays = daysToEvent(this.events[0]);
-    for (const e of this.events) {
-      const d = daysToEvent(e);
-      if (d < bestDays) {
-        bestDays = d;
-        bestName = e.name;
-      }
-    }
-    let tail = '';
-    if (bestDays === 0) {
-      tail = '就是今天';
-    } else if (bestDays > 0) {
-      tail = `${bestDays} 天后`;
-    } else {
-      tail = `${-bestDays} 天前`;
-    }
-    return `共 ${this.events.length} 个日子 · 最近「${bestName}」${tail}`;
+    return buildSummaryText(this.events);
   }
 
   dateLine(item: CountdownEvent): string {
-    const cat = categoryOption(item.category).label;
-    let line = `${item.targetDate} · ${cat}`;
-    if (item.repeatYearly) {
-      line += ' · 每年';
-    }
-    if (item.remindMode > 0) {
-      line += ' · 🔔';
-    }
-    return line;
+    return buildDateLine(item);
   }
 
-  // ---------- 数据概览统计 ----------
-  statsOngoing(): number {
-    return this.events.filter((e: CountdownEvent) => daysToEvent(e) >= 0).length;
-  }
-
-  statsOverdue(): number {
-    return this.events.filter((e: CountdownEvent) => daysToEvent(e) < 0).length;
-  }
-
-  statsWithin30(): number {
-    return this.events.filter((e: CountdownEvent) => {
-      const d = daysToEvent(e);
-      return d >= 0 && d <= 30;
-    }).length;
-  }
-
-  statsWithReminder(): number {
-    return this.events.filter((e: CountdownEvent) => e.remindMode > 0).length;
+  stats(): EventStats {
+    return computeStats(this.events);
   }
 
   async saveEvent(): Promise<void> {
@@ -382,25 +329,19 @@ struct Index {
   }
 
   itemsDone(): number {
-    return this.detailItems.filter((it: ChecklistItem) => it.done).length;
+    return doneCount(this.detailItems);
   }
 
   lastMilestoneText(): string {
-    const ms = lastMilestone(this.detailEv);
-    return ms !== undefined ? `已达成「${ms.label}」` : '';
+    return buildLastMilestoneText(this.detailEv);
   }
 
   nextMilestoneText(): string {
-    const ms = nextMilestone(this.detailEv);
-    if (ms === undefined) {
-      return '';
-    }
-    const when = ms.daysFromToday === 0 ? '就是今天' : `${ms.daysFromToday} 天后`;
-    return `下一个：${ms.label} · ${ms.dateStr}（${when}）`;
+    return buildNextMilestoneText(this.detailEv);
   }
 
   showMilestones(): boolean {
-    return elapsedDays(this.detailEv) > 0;
+    return hasMilestones(this.detailEv);
   }
 
   // ---------- 分享卡片保存（SaveButton 安全控件内调用，免权限弹窗） ----------
@@ -479,21 +420,7 @@ struct Index {
   }
 
   runCalc(): void {
-    const a = new Date(this.calcDateA + 'T00:00:00');
-    const b = new Date(this.calcDateB + 'T00:00:00');
-    if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) {
-      this.calcResult = '请输入有效日期（格式 yyyy-MM-dd）';
-      return;
-    }
-    const diff = Math.round((b.getTime() - a.getTime()) / 86400000);
-    const wd = workingDaysBetween(this.calcDateA, this.calcDateB);
-    let line = diff >= 0 ? `间隔 ${diff} 天，其中 ${wd} 个工作日` : `间隔 ${-diff} 天（结束早于开始），其中 ${wd} 个工作日`;
-    const n = Number(this.calcDays);
-    if (this.calcDays.trim().length > 0 && !Number.isNaN(n)) {
-      const shifted = new Date(a.getTime() + n * 86400000);
-      line += `；${this.calcDateA} ${n >= 0 ? '+' : ''}${n} 天 = ${formatDate(shifted)}`;
-    }
-    this.calcResult = line;
+    this.calcResult = calcDateRange(this.calcDateA, this.calcDateB, this.calcDays);
   }
 
   // ---------- 事件照片背景（系统照片选择器，无需权限） ----------
@@ -551,11 +478,7 @@ struct Index {
 
   // ---------- 那年今天 ----------
   todayMemories(): CountdownEvent[] {
-    const now = new Date();
-    const md = `${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
-    return this.events.filter((e: CountdownEvent) => {
-      return e.targetDate.length >= 10 && e.targetDate.substring(5) === md && daysBetween(e.targetDate) < 0;
-    });
+    return pickTodayMemories(this.events, new Date());
   }
 
   /**
@@ -580,20 +503,7 @@ struct Index {
   }
 
   badgeColor(days: number): string {
-    if (days < 0) {
-      return '#666666';
-    } else if (days === 0) {
-      return '#A32D2D';
-    } else if (days <= 7) {
-      return '#C0392B';
-    } else if (days <= 30) {
-      return '#8F5A00';
-    }
-    return '#185FA5';
-  }
-
-  daysInMonth(y: number, m: number): number {
-    return new Date(y, m, 0).getDate();
+    return pickBadgeColor(days);
   }
 
   syncStepper(): void {
@@ -603,54 +513,15 @@ struct Index {
   }
 
   stepDate(label: string, delta: number): void {
-    let y = this.selYear;
-    let m = this.selMonth;
-    let d = this.selDay;
-    if (label === '年') {
-      y += delta;
-    } else if (label === '月') {
-      m += delta;
-      if (m > 12) {
-        m = 1;
-        y += 1;
-      } else if (m < 1) {
-        m = 12;
-        y -= 1;
-      }
-    } else {
-      d += delta;
-      if (d > this.daysInMonth(y, m)) {
-        d = 1;
-        m += 1;
-        if (m > 12) {
-          m = 1;
-          y += 1;
-        }
-      } else if (d < 1) {
-        m -= 1;
-        if (m < 1) {
-          m = 12;
-          y -= 1;
-        }
-        d = this.daysInMonth(y, m);
-      }
-    }
-    if (y < 1900 || y > 2080) {
+    const cur: DateSelection = { year: this.selYear, month: this.selMonth, day: this.selDay };
+    const next = stepSelection(cur, label, delta, this.formRepeat, new Date());
+    if (next === undefined) {
       return;
     }
-    d = Math.min(d, this.daysInMonth(y, m));
-    // 不倒计时过去的日期：仅对"一次性"事件生效；每年重复的事件保留原始日期（如出生年份）
-    if (!this.formRepeat) {
-      const today = new Date();
-      const today0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-      if (new Date(y, m - 1, d).getTime() < today0.getTime()) {
-        return;
-      }
-    }
-    this.selYear = y;
-    this.selMonth = m;
-    this.selDay = d;
-    this.pickedDate = new Date(y, m - 1, d);
+    this.selYear = next.year;
+    this.selMonth = next.month;
+    this.selDay = next.day;
+    this.pickedDate = new Date(next.year, next.month - 1, next.day);
   }
 
   build() {
@@ -1127,10 +998,10 @@ struct Index {
             .fontColor('#666666')
         } else {
           Column({ space: 10 }) {
-            this.StatsRow('进行中（含今天）', this.statsOngoing(), '#185FA5')
-            this.StatsRow('30 天内到来', this.statsWithin30(), '#8F5A00')
-            this.StatsRow('已过期', this.statsOverdue(), '#666666')
-            this.StatsRow('已开启提醒', this.statsWithReminder(), '#2B6CB0')
+            this.StatsRow('进行中（含今天）', this.stats().ongoing, '#185FA5')
+            this.StatsRow('30 天内到来', this.stats().within30, '#8F5A00')
+            this.StatsRow('已过期', this.stats().overdue, '#666666')
+            this.StatsRow('已开启提醒', this.stats().withReminder, '#2B6CB0')
           }
           .width('100%')
           .padding(12)
@@ -1558,7 +1429,7 @@ struct Index {
         if (item.items.length > 0) {
           Row({ space: 8 }) {
             Progress({
-              value: item.items.filter((it: ChecklistItem) => it.done).length,
+              value: doneCount(item.items),
               total: item.items.length,
               style: ProgressStyle.Linear
             })
@@ -1566,7 +1437,7 @@ struct Index {
               .backgroundColor('#E8EAED')
               .borderRadius(4)
               .layoutWeight(1)
-            Text(`准备 ${item.items.filter((it: ChecklistItem) => it.done).length}/${item.items.length}`)
+            Text(checklistLabel(item.items))
               .fontSize(11)
               .fontColor('#2B6CB0')
           }
