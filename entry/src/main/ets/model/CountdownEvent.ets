@@ -20,6 +20,80 @@ export function categoryOption(key: string): CategoryOption {
   return found !== undefined ? found : CATEGORY_OPTIONS[4];
 }
 
+// ==================== 自定义分类（v1.3.5） ====================
+
+// 自建分类数量上限与名称长度上限
+export const CUSTOM_CATEGORY_LIMIT = 6;
+export const CUSTOM_CATEGORY_NAME_MAX = 6;
+
+/**
+ * 从 JSON 解析自定义分类（只接受 c_ 前缀的 key，非法数据静默丢弃）
+ */
+export function parseCustomCategories(raw: string): CategoryOption[] {
+  try {
+    const arr = JSON.parse(raw) as CategoryOption[];
+    if (!Array.isArray(arr)) {
+      return [];
+    }
+    const seen = new Set<string>();
+    const out: CategoryOption[] = [];
+    for (const c of arr) {
+      if (c === undefined || c === null) {
+        continue;
+      }
+      const key = typeof c.key === 'string' ? c.key : '';
+      const label = typeof c.label === 'string' ? c.label.trim() : '';
+      if (!key.startsWith('c_') || label.length === 0 || label.length > CUSTOM_CATEGORY_NAME_MAX) {
+        continue;
+      }
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const opt: CategoryOption = { key: key, label: label, emoji: '🏷️' };
+      out.push(opt);
+    }
+    return out.slice(0, CUSTOM_CATEGORY_LIMIT);
+  } catch (err) {
+    return [];
+  }
+}
+
+/**
+ * 预设分类 + 自建分类 合并成完整选项列表
+ */
+export function mergeCategories(custom: CategoryOption[]): CategoryOption[] {
+  return CATEGORY_OPTIONS.concat(custom.slice(0, CUSTOM_CATEGORY_LIMIT));
+}
+
+/**
+ * 按 key 查分类（含自建）；查不到回落到「其他」
+ */
+export function optionOf(key: string, custom: CategoryOption[]): CategoryOption {
+  const found = mergeCategories(custom).find((c: CategoryOption) => c.key === key);
+  return found !== undefined ? found : CATEGORY_OPTIONS[4];
+}
+
+/**
+ * 新建自建分类：
+ * 返回 undefined 的情形——名称为空/超长/与其他分类重名/已达数量上限
+ */
+export function newCustomCategory(label: string, existing: CategoryOption[]): CategoryOption | undefined {
+  const name = label.trim();
+  if (name.length === 0 || name.length > CUSTOM_CATEGORY_NAME_MAX) {
+    return undefined;
+  }
+  if (existing.length >= CUSTOM_CATEGORY_LIMIT) {
+    return undefined;
+  }
+  const all = mergeCategories(existing);
+  if (all.some((c: CategoryOption) => c.label === name)) {
+    return undefined;
+  }
+  const opt: CategoryOption = { key: `c_${Date.now()}`, label: name, emoji: '🏷️' };
+  return opt;
+}
+
 /**
  * 事件准备清单条目
  */

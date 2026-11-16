@@ -7,6 +7,8 @@ import eventStoreTest from './EventStore.test';
 import cardSyncTest from './CardSync.test';
 import reminderSchedulerTest from './ReminderScheduler.test';
 import dataBackupTest from './DataBackup.test';
+import historyTodayTest from './HistoryToday.test';
+import customCategoryTest from './CustomCategory.test';
 
 export default function testsuite() {
   countdownEventTest();
@@ -18,4 +20,6 @@ export default function testsuite() {
   cardSyncTest();
   reminderSchedulerTest();
   dataBackupTest();
+  historyTodayTest();
+  customCategoryTest();
 }

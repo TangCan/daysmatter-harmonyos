@@ -6,9 +6,10 @@ import {
   CountdownEvent,
   ChecklistItem,
   Milestone,
+  CategoryOption,
   daysToEvent,
   daysBetween,
-  categoryOption,
+  optionOf,
   elapsedDays,
   lastMilestone,
   nextMilestone
@@ -78,9 +79,11 @@ export function summaryText(events: CountdownEvent[]): string {
 
 /**
  * 卡片日期行：yyyy-MM-dd · 分类 · 每年 · 提醒标记
+ * custom：自定义分类列表（v1.3.5），不传时按预设分类解析
  */
-export function dateLine(item: CountdownEvent): string {
-  const cat = categoryOption(item.category).label;
+export function dateLine(item: CountdownEvent, custom?: CategoryOption[]): string {
+  const cats: CategoryOption[] = custom !== undefined ? custom : [];
+  const cat = optionOf(item.category, cats).label;
   let line = `${item.targetDate} · ${cat}`;
   if (item.repeatYearly) {
     line += ' · 每年';

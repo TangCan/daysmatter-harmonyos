@@ -12,6 +12,7 @@ const KEY_LOCK_SALT = 'lock_salt';
 // 1.3.2 及更早版本存的明文 PIN，仅用于老用户迁移，迁移后即清空
 const KEY_LOCK_PIN_LEGACY = 'lock_pin';
 const KEY_GUIDE_SEEN = 'guide_seen';
+const KEY_CUSTOM_CATS = 'custom_categories'; // v1.3.5 自定义分类（JSON 数组）
 
 /**
  * 事件持久化：使用 Preferences 存 JSON 数组（MVP 够用，后期可升级 relationalStore）
@@ -98,6 +99,26 @@ export class EventStore {
       }).catch((err: Error) => {
         // 写入失败不阻断使用，下次启动会再次展示
       });
+    } catch (err) {
+      // 静默
+    }
+  }
+
+  // ---------- 自定义分类（v1.3.5） ----------
+  static loadCustomCategories(context: common.Context): string {
+    try {
+      const pref = preferences.getPreferencesSync(context.getApplicationContext(), { name: STORE_NAME });
+      return pref.getSync(KEY_CUSTOM_CATS, '[]') as string;
+    } catch (err) {
+      return '[]';
+    }
+  }
+
+  static async saveCustomCategories(context: common.Context, rawJson: string): Promise<void> {
+    try {
+      const pref = await preferences.getPreferences(context.getApplicationContext(), STORE_NAME);
+      await pref.put(KEY_CUSTOM_CATS, rawJson);
+      await pref.flush();
     } catch (err) {
       // 静默
     }

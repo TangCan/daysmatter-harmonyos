@@ -6,10 +6,21 @@ import {
   elapsedDays,
   milestoneProgress,
   unitBreakdown,
-  categoryOption,
+  optionOf,
   CategoryOption,
-  CATEGORY_OPTIONS
+  CUSTOM_CATEGORY_LIMIT,
+  CUSTOM_CATEGORY_NAME_MAX,
+  parseCustomCategories,
+  newCustomCategory,
+  mergeCategories
 } from '../model/CountdownEvent';
+import {
+  HistoryEvent,
+  historyForDate,
+  historyTitle,
+  historyYearText,
+  mdOfDate
+} from '../model/HistoryToday';
 import {
   filterAndSort,
   summaryText as buildSummaryText,
@@ -120,6 +131,12 @@ struct Index {
   @State calcDays: string = '30';
   @State calcResult: string = '';
   @State backupMsg: string = '';
+  // v1.3.5：自定义分类 + 历史上的今天
+  @State customCats: CategoryOption[] = [];
+  @State showHistory: boolean = false;
+  @State showCatDialog: boolean = false;
+  @State newCatName: string = '';
+  @State catMsg: string = '';
   @State pickedDate: Date = new Date();
   @State selYear: number = new Date().getFullYear();
   @State selMonth: number = new Date().getMonth() + 1;
@@ -155,8 +172,65 @@ struct Index {
     const list = await EventStore.load(this.context);
     list.sort((a: CountdownEvent, b: CountdownEvent) => a.targetDate.localeCompare(b.targetDate));
     this.events = list;
+    this.customCats = parseCustomCategories(EventStore.loadCustomCategories(this.context));
     // 兜底：应用每次打开时刷新桌面卡片（覆盖卡片先于数据添加等场景）
     await CardSync.updateAllCards(this.context, list);
+  }
+
+  /**
+   * 预设 + 自建分类的完整选项（v1.3.5）
+   */
+  allCats(): CategoryOption[] {
+    return mergeCategories(this.customCats);
+  }
+
+  /**
+   * 某个分类下的事件数（统计页 / 删除校验共用）
+   */
+  catUsageCount(key: string): number {
+    return this.events.filter((e: CountdownEvent) => e.category === key).length;
+  }
+
+  /**
+   * 新建自定义分类：校验通过后立即持久化
+   */
+  addCustomCat(): void {
+    const opt = newCustomCategory(this.newCatName, this.customCats);
+    if (opt === undefined) {
+      if (this.customCats.length >= CUSTOM_CATEGORY_LIMIT) {
+        this.catMsg = `最多 ${CUSTOM_CATEGORY_LIMIT} 个自建分类`;
+      } else if (this.newCatName.trim().length === 0) {
+        this.catMsg = '请输入分类名称';
+      } else if (this.newCatName.trim().length > CUSTOM_CATEGORY_NAME_MAX) {
+        this.catMsg = `名称不超过 ${CUSTOM_CATEGORY_NAME_MAX} 个字`;
+      } else {
+        this.catMsg = '该名称已存在';
+      }
+      return;
+    }
+    const next = this.customCats.concat([opt]);
+    this.customCats = next;
+    EventStore.saveCustomCategories(this.context, JSON.stringify(next));
+    this.newCatName = '';
+    this.catMsg = '';
+    this.formCategory = opt.key;
+  }
+
+  /**
+   * 删除自定义分类：仍被事件使用时禁止删除
+   */
+  deleteCustomCat(key: string): void {
+    if (this.catUsageCount(key) > 0) {
+      this.catMsg = '有事件正在使用该分类，无法删除';
+      return;
+    }
+    const next = this.customCats.filter((c: CategoryOption) => c.key !== key);
+    this.customCats = next;
+    EventStore.saveCustomCategories(this.context, JSON.stringify(next));
+    this.catMsg = '';
+    if (this.formCategory === key) {
+      this.formCategory = 'other';
+    }
   }
 
   agreePrivacy(): void {
@@ -196,7 +270,7 @@ struct Index {
   }
 
   dateLine(item: CountdownEvent): string {
-    return buildDateLine(item);
+    return buildDateLine(item, this.customCats);
   }
 
   stats(): EventStats {
@@ -747,6 +821,13 @@ struct Index {
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
 
+          Text('历史')
+            .fontSize(13)
+            .fontColor('#2B6CB0')
+            .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+            .onClick(() => {
+              this.showHistory = true;
+            })
           Text('设置')
             .fontSize(13)
             .fontColor('#2B6CB0')
@@ -801,7 +882,7 @@ struct Index {
         Scroll() {
           Row({ space: 8 }) {
             this.CategoryChip({ key: 'all', label: '全部', emoji: '📋' })
-            ForEach(CATEGORY_OPTIONS, (c: CategoryOption) => {
+            ForEach(this.allCats(), (c: CategoryOption) => {
               this.CategoryChip({ key: c.key, label: c.label, emoji: c.emoji })
             }, (c: CategoryOption) => c.key)
           }
@@ -829,6 +910,9 @@ struct Index {
                   .fontSize(12)
                   .fontColor('#2B6CB0')
                 Text('🔔 到点提醒    🧧 节日模板    🧮 日期计算器')
+                  .fontSize(12)
+                  .fontColor('#2B6CB0')
+                Text('📅 历史今天    🏷️ 自定义分类    📊 桌面卡片')
                   .fontSize(12)
                   .fontColor('#2B6CB0')
               }
@@ -922,6 +1006,16 @@ struct Index {
       // ---------- 日期计算器 ----------
       if (this.showCalc) {
         this.CalcDialog()
+      }
+
+      // ---------- 历史上的今天（v1.3.5） ----------
+      if (this.showHistory) {
+        this.HistoryDialog()
+      }
+
+      // ---------- 自定义分类管理（v1.3.5） ----------
+      if (this.showCatDialog) {
+        this.CatDialog()
       }
     }
     .width('100%')
@@ -1065,7 +1159,7 @@ struct Index {
                 .fontColor('#666666')
                 .width(48)
               Flex({ wrap: FlexWrap.Wrap }) {
-                ForEach(CATEGORY_OPTIONS, (c: CategoryOption) => {
+                ForEach(this.allCats(), (c: CategoryOption) => {
                   Text(`${c.emoji} ${c.label}`)
                     .fontSize(12)
                     .fontColor(this.formCategory === c.key ? '#FFFFFF' : '#333333')
@@ -1077,6 +1171,20 @@ struct Index {
                       this.formCategory = c.key;
                     })
                 }, (c: CategoryOption) => c.key)
+                if (this.customCats.length < CUSTOM_CATEGORY_LIMIT) {
+                  Text('＋ 新分类')
+                    .fontSize(12)
+                    .fontColor('#2B6CB0')
+                    .backgroundColor('#E6F0FA')
+                    .padding({ left: 10, right: 10, top: 6, bottom: 6 })
+                    .borderRadius(14)
+                    .margin({ right: 8, bottom: 6 })
+                    .onClick(() => {
+                      this.newCatName = '';
+                      this.catMsg = '';
+                      this.showCatDialog = true;
+                    })
+                }
               }
               .layoutWeight(1)
             }
@@ -1236,14 +1344,14 @@ struct Index {
           Divider().color('#E8EAED')
 
           Column({ space: 8 }) {
-            ForEach(CATEGORY_OPTIONS, (c: CategoryOption) => {
+            ForEach(this.allCats(), (c: CategoryOption) => {
               Row({ space: 6 }) {
                 Text(c.emoji).fontSize(13)
                 Text(c.label)
                   .fontSize(13)
                   .fontColor('#444444')
                 Blank()
-                Text(`${this.events.filter((e: CountdownEvent) => e.category === c.key).length} 个`)
+                Text(`${this.catUsageCount(c.key)} 个`)
                   .fontSize(13)
                   .fontColor('#666666')
               }
@@ -1265,7 +1373,7 @@ struct Index {
               .fontColor('#1F2328')
             ForEach(this.todayMemories(), (e: CountdownEvent) => {
               Row({ space: 6 }) {
-                Text(categoryOption(e.category).emoji).fontSize(13)
+                Text(optionOf(e.category, this.customCats).emoji).fontSize(13)
                 Text(e.name)
                   .fontSize(13)
                   .fontColor('#444444')
@@ -1291,6 +1399,173 @@ struct Index {
           .onClick(() => {
             this.showStats = false;
           })
+      }
+      .width('88%')
+      .padding(20)
+      .borderRadius(16)
+      .backgroundColor(Color.White)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /**
+   * 历史上的今天（v1.3.5）：内置事件库按今天日期展示
+   */
+  todayHistory(): HistoryEvent[] {
+    return historyForDate(mdOfDate(new Date()));
+  }
+
+  @Builder
+  HistoryDialog() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          this.showHistory = false;
+        })
+
+      Column({ space: 12 }) {
+        Text(`历史上的今天 · ${historyTitle(new Date())}`)
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#1F2328')
+
+        Scroll() {
+          Column({ space: 8 }) {
+            ForEach(this.todayHistory(), (h: HistoryEvent) => {
+              Row({ space: 10 }) {
+                Text(historyYearText(h.year))
+                  .fontSize(13)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor('#2B6CB0')
+                  .width(72)
+                Text(h.text)
+                  .fontSize(13)
+                  .fontColor('#444444')
+                  .layoutWeight(1)
+              }
+              .width('100%')
+              .alignItems(VerticalAlign.Top)
+            }, (h: HistoryEvent) => `${h.md}-${h.year}-${h.text}`)
+          }
+          .width('100%')
+        }
+        .scrollBar(BarState.Off)
+        .align(Alignment.TopStart)
+        .constraintSize({ maxHeight: 320 })
+
+        if (this.todayHistory().length === 0) {
+          Text('这一天暂无收录事件，明天再来看看')
+            .fontSize(13)
+            .fontColor('#666666')
+        }
+
+        Button('关闭')
+          .width('100%')
+          .height(40)
+          .backgroundColor('#E8EAED')
+          .fontColor('#333333')
+          .onClick(() => {
+            this.showHistory = false;
+          })
+      }
+      .width('88%')
+      .padding(20)
+      .borderRadius(16)
+      .backgroundColor(Color.White)
+      .alignItems(HorizontalAlign.Start)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  /**
+   * 自定义分类管理（v1.3.5）：新建 / 删除自建分类
+   */
+  @Builder
+  CatDialog() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          this.showCatDialog = false;
+        })
+
+      Column({ space: 12 }) {
+        Text('自定义分类')
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#1F2328')
+
+        TextInput({ placeholder: `分类名称（${CUSTOM_CATEGORY_NAME_MAX} 字以内）`, text: this.newCatName })
+          .height(42)
+          .placeholderColor('#666666')
+          .fontColor('#1F2328')
+          .backgroundColor('#F1F3F5')
+          .borderRadius(10)
+          .padding({ left: 12, right: 12 })
+          .onChange((value: string) => {
+            this.newCatName = value;
+          })
+
+        if (this.catMsg.length > 0) {
+          Text(this.catMsg)
+            .fontSize(12)
+            .fontColor('#C0392B')
+        }
+
+        if (this.customCats.length > 0) {
+          Column({ space: 6 }) {
+            ForEach(this.customCats, (c: CategoryOption) => {
+              Row({ space: 6 }) {
+                Text(`${c.emoji} ${c.label}`)
+                  .fontSize(13)
+                  .fontColor('#444444')
+                  .layoutWeight(1)
+                Text('✕')
+                  .fontSize(14)
+                  .fontColor('#C0392B')
+                  .padding(6)
+                  .onClick(() => {
+                    this.deleteCustomCat(c.key);
+                  })
+              }
+              .width('100%')
+            }, (c: CategoryOption) => c.key)
+          }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+        } else {
+          Text('还没有自建分类。创建后可在筛选和添加事件时使用')
+            .fontSize(12)
+            .fontColor('#666666')
+        }
+
+        Row({ space: 10 }) {
+          Button('取消')
+            .layoutWeight(1)
+            .height(40)
+            .backgroundColor('#E8EAED')
+            .fontColor('#333333')
+            .onClick(() => {
+              this.showCatDialog = false;
+            })
+          Button('保存')
+            .layoutWeight(1)
+            .height(40)
+            .backgroundColor('#2B6CB0')
+            .fontColor(Color.White)
+            .onClick(() => {
+              this.addCustomCat();
+            })
+        }
+        .width('100%')
       }
       .width('88%')
       .padding(20)
@@ -1732,6 +2007,8 @@ struct Index {
             this.GuideRow('🧮', '日期计算器', '两日期间隔、工作日、加减推算')
             this.GuideRow('💾', '备份与隐私锁', 'JSON 导出导入，PIN 锁保护隐私')
             this.GuideRow('📊', '桌面卡片', '2×2 与 2×4 卡片，负一屏直达')
+            this.GuideRow('📅', '历史上的今天', '每天打开看一眼历史上的这一天')
+            this.GuideRow('🏷️', '自定义分类', '建自己的分组，筛选更顺手')
           }
           .width('100%')
         }
@@ -1831,7 +2108,7 @@ struct Index {
     Row({ space: 12 }) {
       Column({ space: 5 }) {
         Row({ space: 6 }) {
-          Text(categoryOption(item.category).emoji)
+          Text(optionOf(item.category, this.customCats).emoji)
             .fontSize(15)
           Text(item.name)
             .fontSize(17)
@@ -1937,7 +2214,7 @@ struct Index {
       }
       Column({ space: 10 }) {
         Row({ space: 8 }) {
-          Text(categoryOption(this.detailEv.category).emoji)
+          Text(optionOf(this.detailEv.category, this.customCats).emoji)
             .fontSize(22)
           Text(this.detailEv.name)
             .fontSize(20)
