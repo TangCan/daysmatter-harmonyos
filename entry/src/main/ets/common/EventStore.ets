@@ -11,6 +11,7 @@ const KEY_LOCK_HASH = 'lock_hash';
 const KEY_LOCK_SALT = 'lock_salt';
 // 1.3.2 及更早版本存的明文 PIN，仅用于老用户迁移，迁移后即清空
 const KEY_LOCK_PIN_LEGACY = 'lock_pin';
+const KEY_GUIDE_SEEN = 'guide_seen';
 
 /**
  * 事件持久化：使用 Preferences 存 JSON 数组（MVP 够用，后期可升级 relationalStore）
@@ -73,6 +74,29 @@ export class EventStore {
         await pref.flush();
       }).catch((err: Error) => {
         // 写入失败不阻断使用，下次启动会再次询问
+      });
+    } catch (err) {
+      // 静默
+    }
+  }
+
+  // ---------- 功能导览（首次使用展示一次） ----------
+  static isGuideSeen(context: common.Context): boolean {
+    try {
+      const pref = preferences.getPreferencesSync(context.getApplicationContext(), { name: STORE_NAME });
+      return pref.getSync(KEY_GUIDE_SEEN, false) as boolean;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  static setGuideSeen(context: common.Context, seen: boolean): void {
+    try {
+      preferences.getPreferences(context.getApplicationContext(), STORE_NAME).then(async (pref) => {
+        await pref.put(KEY_GUIDE_SEEN, seen);
+        await pref.flush();
+      }).catch((err: Error) => {
+        // 写入失败不阻断使用，下次启动会再次展示
       });
     } catch (err) {
       // 静默

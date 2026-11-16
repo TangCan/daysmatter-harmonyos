@@ -91,6 +91,7 @@ struct Index {
   @State formRemind: number = 0;
   @State showStats: boolean = false;
   @State showPrivacy: boolean = false;
+  @State showGuide: boolean = false;
   @State detailId: string = '';
   @State detailEv: CountdownEvent = new CountdownEvent();
   @State detailItems: ChecklistItem[] = [];
@@ -130,6 +131,8 @@ struct Index {
   aboutToAppear(): void {
     // 合规要求：首次启动必须在用户同意隐私政策后才进入使用
     this.showPrivacy = !EventStore.isPrivacyAgreed(this.context);
+    // 首次使用（已同意隐私但未看过导览）展示功能导览
+    this.showGuide = !this.showPrivacy && !EventStore.isGuideSeen(this.context);
     // 隐私锁：启动即锁定（需输入 PIN 解锁）
     this.lockOn = EventStore.isLockEnabled(this.context);
     // 兜底：开启状态却没有任何凭证（缓存被清理等）时不能把用户锁在门外
@@ -159,6 +162,10 @@ struct Index {
   agreePrivacy(): void {
     EventStore.setPrivacyAgreed(this.context, true);
     this.showPrivacy = false;
+    // 首次使用展示功能导览，让用户一眼了解全部能力
+    if (!EventStore.isGuideSeen(this.context)) {
+      this.showGuide = true;
+    }
   }
 
   refusePrivacy(): void {
@@ -816,6 +823,17 @@ struct Index {
             Text(this.events.length === 0 ? '点击右下角 + 添加第一个重要日子' : '试试换个分类或关键词')
               .fontSize(13)
               .fontColor('#666666')
+            if (this.events.length === 0) {
+              Column({ space: 6 }) {
+                Text('✅ 准备清单    🏅 里程碑    🖼️ 分享卡片')
+                  .fontSize(12)
+                  .fontColor('#2B6CB0')
+                Text('🔔 到点提醒    🧧 节日模板    🧮 日期计算器')
+                  .fontSize(12)
+                  .fontColor('#2B6CB0')
+              }
+              .margin({ top: 8 })
+            }
           }
           .width('100%')
           .layoutWeight(1)
@@ -879,6 +897,11 @@ struct Index {
       // ---------- 首次启动隐私弹窗 ----------
       if (this.showPrivacy) {
         this.PrivacyDialog()
+      }
+
+      // ---------- 首次使用功能导览 ----------
+      if (this.showGuide) {
+        this.GuideDialog()
       }
 
       // ---------- 隐私锁（最顶层，锁定时遮挡全部内容） ----------
@@ -1650,6 +1673,86 @@ struct Index {
       }
       .width('100%')
       .alignItems(HorizontalAlign.Center)
+    }
+    .width('100%')
+    .height('100%')
+  }
+
+  @Builder
+  GuideRow(emoji: string, title: string, desc: string) {
+    Row({ space: 12 }) {
+      Text(emoji)
+        .fontSize(22)
+      Column({ space: 2 }) {
+        Text(title)
+          .fontSize(14)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#1F2328')
+        Text(desc)
+          .fontSize(12)
+          .fontColor('#666666')
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+    }
+    .width('100%')
+    .padding(10)
+    .borderRadius(10)
+    .backgroundColor('#F6F7F9')
+  }
+
+  @Builder
+  GuideDialog() {
+    Stack({ alignContent: Alignment.Center }) {
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor('#99000000')
+        .onClick(() => {
+          // 点击遮罩不关闭：必须点按钮，保证用户看过功能介绍
+        })
+
+      Column({ space: 14 }) {
+        Text('欢迎使用「记得那天」')
+          .fontSize(18)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#1F2328')
+        Text('不只是倒数日，还是你的日子管家')
+          .fontSize(13)
+          .fontColor('#666666')
+
+        Scroll() {
+          Column({ space: 8 }) {
+            this.GuideRow('✅', '事件准备清单', '给日子挂待办，勾选看准备进度')
+            this.GuideRow('🏅', '里程碑时间轴', '恋爱 100 天、周年、宝宝满岁自动生成')
+            this.GuideRow('🖼️', '分享纪念卡片', '一键生成精美图片保存到相册')
+            this.GuideRow('🔔', '系统级提醒', '当天或提前 1 天通知，每年自动循环')
+            this.GuideRow('🧧', '节日模板', '内置农历节日，点一下即完成填写')
+            this.GuideRow('🖼️', '照片背景', '给日子配一张照片，更有仪式感')
+            this.GuideRow('🧮', '日期计算器', '两日期间隔、工作日、加减推算')
+            this.GuideRow('💾', '备份与隐私锁', 'JSON 导出导入，PIN 锁保护隐私')
+            this.GuideRow('📊', '桌面卡片', '2×2 与 2×4 卡片，负一屏直达')
+          }
+          .width('100%')
+        }
+        .scrollBar(BarState.Off)
+        .width('100%')
+        .constraintSize({ maxHeight: 380 })
+
+        Button('开始使用')
+          .width('100%')
+          .height(44)
+          .backgroundColor('#2B6CB0')
+          .onClick(() => {
+            EventStore.setGuideSeen(this.context, true);
+            this.showGuide = false;
+          })
+      }
+      .width('86%')
+      .padding(18)
+      .borderRadius(16)
+      .backgroundColor(Color.White)
+      .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
     .height('100%')

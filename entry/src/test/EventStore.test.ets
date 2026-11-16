@@ -146,6 +146,41 @@ export default function eventStoreTest() {
     });
   });
 
+  describe('EventStore.功能导览标记', () => {
+    beforeEach(() => {
+      resetMock();
+    });
+
+    it('默认未看过导览', 0, () => {
+      expect(EventStore.isGuideSeen(fakeContext())).assertFalse();
+    });
+
+    it('标记后可读回 true', 0, async () => {
+      const ctx = fakeContext();
+      EventStore.setGuideSeen(ctx, true);
+      await tick();
+      expect(EventStore.isGuideSeen(ctx)).assertTrue();
+    });
+
+    it('上下文不可用时视为未看过', 0, () => {
+      expect(EventStore.isGuideSeen(brokenContext())).assertFalse();
+    });
+
+    it('写入失败不抛异常', 0, async () => {
+      mock.fail.put = true;
+      EventStore.setGuideSeen(fakeContext(), true);
+      await tick();
+      expect(true).assertTrue();
+    });
+
+    it('取 Preferences 抛错时静默', 0, async () => {
+      mock.fail.getPreferences = true;
+      EventStore.setGuideSeen(fakeContext(), true);
+      await tick();
+      expect(true).assertTrue();
+    });
+  });
+
   describe('EventStore.隐私锁', () => {
     beforeEach(() => {
       resetMock();
