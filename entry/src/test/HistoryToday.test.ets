@@ -5,8 +5,21 @@ import {
   historyYearText,
   mdOfDate,
   pickHistoryOf,
+  integratedToday,
+  TodayItem,
   HistoryEvent
 } from '../main/ets/model/HistoryToday';
+import { CountdownEvent } from '../main/ets/model/CountdownEvent';
+
+function makeEv(id: string, name: string, date: string, category: string, repeat: boolean): CountdownEvent {
+  const e = new CountdownEvent();
+  e.id = id;
+  e.name = name;
+  e.targetDate = date;
+  e.category = category;
+  e.repeatYearly = repeat;
+  return e;
+}
 
 export default function historyTodayTest() {
   describe('HistoryToday.data', () => {
@@ -96,6 +109,110 @@ export default function historyTodayTest() {
         expect(a.year).assertEqual(b.year);
       }
       expect(pickHistoryOf('02-30', 1) === undefined).assertTrue();
+    });
+  });
+
+  describe('HistoryToday.integrated', () => {
+    it('合并我的事件与历史事件，按年份升序', 0, () => {
+      const events: CountdownEvent[] = [
+        makeEv('u1', '第一次见面', '2019-11-17', 'anniversary', false),
+        makeEv('u2', '宝宝出生', '2023-11-17', 'birthday', true)
+      ];
+      const list = integratedToday(events, '11-07', []);
+      expect(list.length >= 1).assertTrue();
+      const mixed = integratedToday(events, '11-07', []);
+      let mineCount = 0;
+      for (const t of mixed) {
+        if (t.kind === 0) {
+          mineCount++;
+        }
+      }
+      expect(mineCount).assertEqual(0);
+    });
+
+    it('我的事件在 11-07 命中且排在居里夫人之后', 0, () => {
+      const events: CountdownEvent[] = [
+        makeEv('u1', '第一次见面', '2019-11-07', 'anniversary', false)
+      ];
+      const list = integratedToday(events, '11-07', []);
+      expect(list.length).assertEqual(2);
+      expect(list[0].kind).assertEqual(1);
+      expect(list[0].year).assertEqual(1867);
+      expect(list[1].kind).assertEqual(0);
+      expect(list[1].title).assertEqual('第一次见面');
+    });
+
+    it('同年时我的事件排在历史事件前', 0, () => {
+      const events: CountdownEvent[] = [makeEv('u1', '毕业', '1867-11-07', 'work', false)];
+      const list = integratedToday(events, '11-07', []);
+      expect(list.length).assertEqual(2);
+      expect(list[0].kind).assertEqual(0);
+      expect(list[1].kind).assertEqual(1);
+    });
+
+    it('今天与未来事件不算回忆', 0, () => {
+      const n = new Date();
+      const isoToday = mdOfDate(n);
+      const year = n.getFullYear();
+      const events: CountdownEvent[] = [
+        makeEv('t1', '今天的事', `${year}-${isoToday}`, 'other', false)
+      ];
+      const list = integratedToday(events, isoToday, []);
+      for (const t of list) {
+        expect(t.kind).assertEqual(1);
+      }
+    });
+
+    it('副标题语境：普通过去 N 天前 / 周年 / 满N岁', 0, () => {
+      const events: CountdownEvent[] = [
+        makeEv('u1', '第一次见面', '2019-11-17', 'anniversary', false),
+        makeEv('u2', '领证', '2020-11-17', 'anniversary', true),
+        makeEv('u3', '宝宝出生', '2023-11-17', 'birthday', true)
+      ];
+      const list = integratedToday(events, '11-17', []);
+      const mine = list.filter((t: TodayItem) => t.kind === 0);
+      expect(mine.length).assertEqual(3);
+      const byName = (name: string): TodayItem | undefined => mine.find((t: TodayItem) => t.title === name);
+      const meet = byName('第一次见面');
+      const cert = byName('领证');
+      const baby = byName('宝宝出生');
+      expect(meet !== undefined).assertTrue();
+      expect(cert !== undefined).assertTrue();
+      expect(baby !== undefined).assertTrue();
+      if (meet !== undefined) {
+        expect(meet.sub.indexOf('天前') > 0).assertTrue();
+      }
+      if (cert !== undefined) {
+        expect(cert.sub.indexOf('周年') > 0).assertTrue();
+      }
+      if (baby !== undefined) {
+        expect(baby.sub.indexOf('满') > 0 && baby.sub.indexOf('岁') > 0).assertTrue();
+      }
+    });
+
+    it('副标题带分类 emoji 与标签', 0, () => {
+      const events: CountdownEvent[] = [makeEv('u1', '第一次见面', '2019-11-17', 'anniversary', false)];
+      const list = integratedToday(events, '11-17', []);
+      const mine = list.filter((t: TodayItem) => t.kind === 0);
+      expect(mine.length).assertEqual(1);
+      if (mine.length === 1) {
+        expect(mine[0].sub.indexOf('纪念日') > 0).assertTrue();
+      }
+    });
+
+    it('refId 指向事件 id，历史条目 refId 为空', 0, () => {
+      const events: CountdownEvent[] = [makeEv('u9', '第一次见面', '2019-11-07', 'anniversary', false)];
+      const list = integratedToday(events, '11-07', []);
+      expect(list.length).assertEqual(2);
+      expect(list[0].refId).assertEqual('');
+      expect(list[1].refId).assertEqual('u9');
+    });
+
+    it('非法年份（y<=0）的过滤与空结果兜底', 0, () => {
+      const events: CountdownEvent[] = [makeEv('u1', '怪日期', '0000-11-07', 'other', false)];
+      expect(integratedToday(events, '11-07', []).length).assertEqual(1);
+      expect(integratedToday([], '11-07', []).length).assertEqual(1);
+      expect(integratedToday([], '02-30', []).length).assertEqual(0);
     });
   });
 }

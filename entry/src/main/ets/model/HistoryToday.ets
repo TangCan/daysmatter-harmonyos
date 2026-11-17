@@ -3,6 +3,8 @@
  * 内置精选历史事件库：科学发现、文化艺术、体育成就与中国重大成就
  * 全部为公开史实的中性陈述，纯本地数据，无网络请求
  */
+import { CountdownEvent, optionOf, CategoryOption, daysBetween } from './CountdownEvent';
+
 export interface HistoryEvent {
   md: string;   // 月-日，如 '07-20'
   year: number; // 发生年份（负数表示公元前）
@@ -176,4 +178,64 @@ export function pickHistoryOf(md: string, seed: number): HistoryEvent | undefine
   }
   const idx = Math.abs(seed) % list.length;
   return list[idx];
+}
+
+// ==================== 整合时间轴（v1.3.5）：我的那天 + 历史上的今天 ====================
+
+export interface TodayItem {
+  kind: number;   // 0=我的那天（可点击进详情） 1=内置历史事件
+  year: number;   // 排序用年份（mine 取 targetDate 前四位）
+  title: string;  // mine=事件名 / history=事件描述
+  sub: string;    // mine 的语境副标题（分类·每年·N 天前 / 周年 / 满N岁），history 为空
+  refId: string;  // mine 的事件 id，点击跳详情用；history 为空串
+}
+
+/**
+ * 合并「用户在这一天发生的事件」与「内置历史事件」，按年份升序；
+ * 同年时我的事件排在前面；今天的（daysBetween=0）与未来事件不算回忆
+ */
+export function integratedToday(events: CountdownEvent[], md: string, custom: CategoryOption[]): TodayItem[] {
+  const items: TodayItem[] = [];
+
+  // 我的那天：原始日期月-日匹配且严格在过去
+  const now = new Date();
+  for (const e of events) {
+    if (e.targetDate.length < 10 || e.targetDate.substring(5) !== md) {
+      continue;
+    }
+    if (daysBetween(e.targetDate) >= 0) {
+      continue;
+    }
+    const y = Number(e.targetDate.substring(0, 4));
+    if (Number.isNaN(y) || y <= 0) {
+      continue;
+    }
+    const cat = optionOf(e.category, custom);
+    let sub = `${cat.emoji} ${cat.label}`;
+    const years = now.getFullYear() - y;
+    if (e.repeatYearly && e.category === 'birthday') {
+      sub += ` · 满 ${years} 岁的这一天`;
+    } else if (e.repeatYearly) {
+      sub += ` · ${years} 周年`;
+    } else {
+      const elapsed = Math.round((now.getTime() - new Date(e.targetDate + 'T00:00:00').getTime()) / 86400000);
+      sub += ` · ${elapsed} 天前`;
+    }
+    const item: TodayItem = { kind: 0, year: y, title: e.name, sub: sub, refId: e.id };
+    items.push(item);
+  }
+
+  // 内置历史事件
+  for (const h of historyForDate(md)) {
+    const item: TodayItem = { kind: 1, year: h.year, title: h.text, sub: '', refId: '' };
+    items.push(item);
+  }
+
+  items.sort((a: TodayItem, b: TodayItem) => {
+    if (a.year !== b.year) {
+      return a.year - b.year;
+    }
+    return a.kind - b.kind; // 同年我的在前
+  });
+  return items;
 }

@@ -19,7 +19,9 @@ import {
   historyForDate,
   historyTitle,
   historyYearText,
-  mdOfDate
+  mdOfDate,
+  integratedToday,
+  TodayItem
 } from '../model/HistoryToday';
 import {
   filterAndSort,
@@ -1417,6 +1419,24 @@ struct Index {
     return historyForDate(mdOfDate(new Date()));
   }
 
+  /**
+   * 整合时间轴：我的那天 + 历史上的今天（v1.3.5）
+   */
+  todayTimeline(): TodayItem[] {
+    return integratedToday(this.events, mdOfDate(new Date()), this.customCats);
+  }
+
+  /**
+   * 点击「我的」条目跳转事件详情
+   */
+  openTimelineDetail(refId: string): void {
+    const found = this.events.find((e: CountdownEvent) => e.id === refId);
+    if (found !== undefined) {
+      this.showHistory = false;
+      this.openDetail(found);
+    }
+  }
+
   @Builder
   HistoryDialog() {
     Stack({ alignContent: Alignment.Center }) {
@@ -1433,33 +1453,73 @@ struct Index {
           .fontSize(18)
           .fontWeight(FontWeight.Bold)
           .fontColor('#1F2328')
+        Text('你的记忆与人类历史，在同一天交汇')
+          .fontSize(12)
+          .fontColor('#666666')
 
         Scroll() {
           Column({ space: 8 }) {
-            ForEach(this.todayHistory(), (h: HistoryEvent) => {
+            ForEach(this.todayTimeline(), (t: TodayItem) => {
               Row({ space: 10 }) {
-                Text(historyYearText(h.year))
+                Text(historyYearText(t.year))
                   .fontSize(13)
                   .fontWeight(FontWeight.Medium)
                   .fontColor('#2B6CB0')
                   .width(72)
-                Text(h.text)
-                  .fontSize(13)
-                  .fontColor('#444444')
+                if (t.kind === 0) {
+                  Column({ space: 3 }) {
+                    Row({ space: 6 }) {
+                      Text('我的')
+                        .fontSize(10)
+                        .fontColor('#185FA5')
+                        .backgroundColor('#FFFFFF')
+                        .border({ width: 0.5, color: '#185FA5' })
+                        .borderRadius(4)
+                        .padding({ left: 5, right: 5, top: 1, bottom: 1 })
+                      Text(t.title)
+                        .fontSize(13)
+                        .fontWeight(FontWeight.Medium)
+                        .fontColor('#1F2328')
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    }
+                    Text(t.sub)
+                      .fontSize(11)
+                      .fontColor('#666666')
+                      .maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  }
+                  .alignItems(HorizontalAlign.Start)
                   .layoutWeight(1)
+                  .backgroundColor('#E6F0FA')
+                  .borderRadius(10)
+                  .border({ width: 0.5, color: '#2B6CB0' })
+                  .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                  .onClick(() => {
+                    this.openTimelineDetail(t.refId);
+                  })
+                } else {
+                  Text(t.title)
+                    .fontSize(13)
+                    .fontColor('#444444')
+                    .layoutWeight(1)
+                    .backgroundColor('#F5F6F8')
+                    .borderRadius(10)
+                    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                }
               }
               .width('100%')
               .alignItems(VerticalAlign.Top)
-            }, (h: HistoryEvent) => `${h.md}-${h.year}-${h.text}`)
+            }, (t: TodayItem) => `${t.kind}-${t.refId}-${t.year}-${t.title}`)
           }
           .width('100%')
         }
         .scrollBar(BarState.Off)
         .align(Alignment.TopStart)
-        .constraintSize({ maxHeight: 320 })
+        .constraintSize({ maxHeight: 340 })
 
-        if (this.todayHistory().length === 0) {
-          Text('这一天暂无收录事件，明天再来看看')
+        if (this.todayTimeline().length === 0) {
+          Text('这一天还没有故事。添加过去的日子后，这里会浮现你的回忆')
             .fontSize(13)
             .fontColor('#666666')
         }
